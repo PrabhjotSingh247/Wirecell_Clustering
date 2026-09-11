@@ -1,0 +1,15 @@
+# BEE event display links -- img-clus-match-tag-pr-nuecc sample (one event per zip)
+#
+# Sample:   img-clus-match-tag-pr-nuecc-1000file-2026-08-29 (8866 zips, testing 100)
+# Staging:  <sample>/staging/chunk<NN>/data/<k>/  (see readfiles.stage_nuecc_chunks)
+#
+# Same format as bee_links_100_files_chunk.txt: one BEE set per staged chunk,
+# 'chunk<NN>  <events>  <url>', url ending in '/event/list/'. Event numbers
+# inside a set are the chunk's own 0..k-1 numbering (the data/<k> dir names) --
+# chunk<NN>/event_map.txt maps each k back to its real (run, subrun, event, zip).
+#
+# EMPTY until the staged chunks are uploaded to BEE. load_bee_links() returns {}
+# for a file with no data rows, so Draw_Signal_Background_True.ipynb still runs
+# and draws every figure -- just without the per-event BEE URL on the rows.
+#
+# chunk      events  BEE_link

@@ -403,12 +403,11 @@ def draw_img_global_clusters(all_clusters, flash_clusters, beam_window_clusters,
 def draw_unmatched_neutrino_flash_times(neutrino_rows, output_dir, apa, level_name, filename_prefix,
                                          file_name=None):
     """
-    Flash-time distribution of the 'reco_outside_beam_window' cases from
-    metadata.categorize_unmatched_true_neutrinos(): for each true neutrino that
-    lost its reco partner to the beam-window cut, the flash time of the reco
-    cluster that WOULD have matched it. Shows, in one picture, whether those
-    neutrinos sat just outside the spill or whether charge-light matching handed
-    their cluster a wildly out-of-time (cosmic) flash.
+    Flash-time distribution of the neutrinos whose reco partner had an
+    out-of-window flash -- category 'reco_outside_beam_window' (a genuine timing
+    loss, flash near the window edge) plus 'wrong_charge_light_matching' rows
+    that carry a winner_flash_time (charge-light handed the cluster a wildly
+    out-of-time cosmic flash). Shows both readings in one picture.
 
     Level-agnostic like the writers in writeinformation.py -- pass one event's
     rows for the event-level copy, a whole file's or job's for the aggregated one.
@@ -427,10 +426,11 @@ def draw_unmatched_neutrino_flash_times(neutrino_rows, output_dir, apa, level_na
     - output_dir, apa, level_name, filename_prefix, file_name: same convention as draw_flashes
 
     Saved as unmatched_neutrino_flash_times_{filename_prefix}_{apa}.png.
-    No-op (returns without writing) if no row is category 'reco_outside_beam_window'.
+    No-op (returns without writing) if no row carries an out-of-window winner flash.
     """
     flash_times = [r['winner_flash_time'] for r in neutrino_rows
-                    if r['category'] == 'reco_outside_beam_window' and r['winner_flash_time'] is not None]
+                    if r['category'] in ('reco_outside_beam_window', 'wrong_charge_light_matching')
+                    and r['winner_flash_time'] is not None]
     if not flash_times:
         return
 

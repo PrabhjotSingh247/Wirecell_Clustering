@@ -30,6 +30,7 @@ import argparse
 import os
 import re
 import shutil
+import subprocess
 import zipfile
 from collections import OrderedDict
 from pathlib import Path
@@ -163,6 +164,125 @@ def make_zip(out_dir, zip_path):
     if 'event_map.txt' not in written:
         raise RuntimeError("zip has no event_map.txt -- the set would be unattributable")
     return Path(zip_path)
+
+
+_SET_URL_RE = re.compile(r'https?://\S+/set/[0-9a-f-]+/event/')
+
+
+def upload_bee_zip(zip_path, upload_script=None, cwd=None):
+    """
+    Upload one BEE zip via upload-to-bee.sh and return the set URL it prints
+    (its last stdout line, of the form .../set/<id>/event/list/).
+
+    Returns None -- and prints why -- if the upload script is missing, the process
+    fails or times out, or the last line is not a set URL. An upload that did not
+    happen must never be mistaken for one that did.
+
+    cwd defaults to the zip's directory: upload-to-bee.sh writes and deletes a
+    cookies.txt in the working directory, so it must run somewhere writable.
+    """
+    zip_path = Path(zip_path)
+    upload_script = Path(upload_script) if upload_script else REPO / 'upload-to-bee.sh'
+    if not upload_script.exists():
+        print(f"  BEE upload skipped: {upload_script} not found")
+        return None
+    cwd = Path(cwd) if cwd is not None else zip_path.parent
+    try:
+        proc = subprocess.run(
+            ['bash', str(upload_script), str(zip_path.resolve())],
+            cwd=str(cwd), capture_output=True, text=True, timeout=1800,
+            env={**os.environ, 'BROWSER': 'echo'})
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"  BEE upload failed to run: {exc}")
+        return None
+    lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+    url = lines[-1] if lines else ''
+    if not _SET_URL_RE.match(url):
+        print(f"  BEE upload did not return a set URL (rc={proc.returncode}); "
+              f"last line: {url!r}")
+        if proc.stderr.strip():
+            print(f"  stderr: {proc.stderr.strip()[:400]}")
+        return None
+    return url
+
+
+def build_and_upload_set(selections, parent_dir, out_dir, source_label,
+                         upload=True, upload_script=None):
+    """
+    build() + write_event_map() + make_zip() for a {(chunk, event): [figures]}
+    selection, then (upload=True) upload it as ONE BEE set.
+
+    Returns (set_url or None, event_map_path or None, rows) where rows is
+    build()'s output -- [(bee_event_number, chunk, orig_event, figures), ...] --
+    so a caller can map (chunk, orig_event) to <set>/event/<bee_event_number>/.
+    On a successful upload the URL is also written into event_map.txt as a
+    'BEE SET URL:' line under the header (see feedback_bee_sets_per_run). Returns
+    (None, None, []) if the selection assembled no events.
+    """
+    out_dir = Path(out_dir)
+    rows = build(selections, parent_dir, out_dir)
+    if not rows:
+        return None, None, []
+    map_path = write_event_map(rows, out_dir, [source_label])
+    zip_path = out_dir.with_suffix('.zip')
+    make_zip(out_dir, zip_path)
+    url = upload_bee_zip(zip_path, upload_script) if upload else None
+    if url:
+        header = "BEE SET -- what each event in this upload actually is"
+        map_path.write_text(map_path.read_text().replace(
+            header, f"{header}\nBEE SET URL: {url}", 1))
+    return url, map_path, rows
+
+
+def build_population_bee_set(entries, parent_dir, out_dir, label,
+                             key_fn=None, upload=True):
+    """
+    ONE BEE set for a whole saved-view population, and entry['bee_url'] set on
+    every entry in place to its per-event url inside that new set.
+
+    The nuecc sample has no per-chunk BEE sets, so a population's figures cannot
+    otherwise carry a link. This builds a set from the population's own events
+    (via build_and_upload_set), uploads it, and back-fills the links so the
+    normal bee_links writers produce real urls.
+
+    entries: list of dicts, each with a 'path' (a drawn figure) and a way to name
+    its staged event. key_fn(entry) -> (staged_dir_name, event_int); the default
+    reads entry['chunk'] and int(entry['event']).
+
+    Returns the set url (or None -- empty population, nothing assembled, or the
+    upload failed; entry['bee_url'] is then left untouched).
+    """
+    if not entries:
+        return None
+    if key_fn is None:
+        def key_fn(entry):
+            return (entry['chunk'], int(entry['event']))
+
+    selections = OrderedDict()
+    for entry in entries:
+        try:
+            key = key_fn(entry)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+        selections.setdefault(key, []).append(Path(entry.get('path') or '').name or str(key))
+    if not selections:
+        return None
+    selections = OrderedDict(sorted(selections.items(),
+                                    key=lambda kv: (str(kv[0][0]), kv[0][1])))
+
+    url, _map_path, rows = build_and_upload_set(selections, parent_dir, out_dir,
+                                                label, upload=upload)
+    if not url:
+        return None
+    # url ends '.../set/<id>/event/list/'; the per-event url swaps 'list' for n.
+    event_base = url.rstrip('/').rsplit('/', 1)[0]
+    per_event = {(chunk, event): f"{event_base}/{n}/" for n, chunk, event, _figs in rows}
+    for entry in entries:
+        try:
+            entry['bee_url'] = per_event.get(key_fn(entry), url)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            pass
+    return url
 
 
 def main():

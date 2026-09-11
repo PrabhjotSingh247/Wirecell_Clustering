@@ -588,9 +588,9 @@ def write_extra_reco_info(categorized_rows, output_dir, filename="extra_reco_inf
     return out_path
 
 
-_UNMATCHED_TRUE_NU_CATEGORY_ORDER = ['removed_by_cosmic_tagger',
-                                      'reco_outside_beam_window', 'reco_no_flash_match',
-                                      'broken_or_sparse_reco', 'no_reco_overlap_x_shift',
+_UNMATCHED_TRUE_NU_CATEGORY_ORDER = ['wrong_charge_light_matching', 'removed_by_cosmic_tagger',
+                                      'reco_outside_beam_window',
+                                      'broken_or_sparse_reco',
                                       'no_reco_overlap', 'unexplained']
 
 
@@ -606,11 +606,9 @@ def write_unmatched_true_neutrino_info(neutrino_rows, output_dir, filename="unma
     a whole file's/job's for the aggregated one.
 
     Rows are grouped by category in _UNMATCHED_TRUE_NU_CATEGORY_ORDER. Within
-    reco_outside_beam_window they sort by |flash offset| so the near misses (a
-    neutrino barely outside the spill) come before the gross ones (a
-    charge-light mis-assignment to a far-away cosmic flash); within
-    no_reco_overlap they sort by ascending min_dist, so the X-mis-assignment
-    candidates come before the genuinely-unreconstructed ones.
+    reco_outside_beam_window and wrong_charge_light_matching they sort by
+    |flash offset| so the near misses come before the gross ones; within
+    no_reco_overlap they sort by ascending min_dist.
 
     Parameters:
     - neutrino_rows: List of dicts from metadata.categorize_unmatched_true_neutrinos()
@@ -634,7 +632,7 @@ def write_unmatched_true_neutrino_info(neutrino_rows, output_dir, filename="unma
     def _sort_key(r):
         cat_rank = _UNMATCHED_TRUE_NU_CATEGORY_ORDER.index(r['category']) \
             if r['category'] in _UNMATCHED_TRUE_NU_CATEGORY_ORDER else len(_UNMATCHED_TRUE_NU_CATEGORY_ORDER)
-        if r['category'] == 'reco_outside_beam_window':
+        if r['category'] in ('reco_outside_beam_window', 'wrong_charge_light_matching'):
             return (cat_rank, abs(r['winner_flash_offset_us']) if r['winner_flash_offset_us'] is not None else 1e9)
         return (cat_rank, r['min_dist'] if r['min_dist'] is not None else -1)
 
@@ -642,36 +640,33 @@ def write_unmatched_true_neutrino_info(neutrino_rows, output_dir, filename="unma
         f.write(f"{'='*205}\n")
         f.write("TRUE NEUTRINO CLUSTERS WITH NO RECO MATCH\n")
         f.write(f"{'='*205}\n")
-        f.write("NOTE: the three 'would have matched' reasons below require the overlapping cluster to reach\n")
-        f.write("      completeness > 10% AND purity > 10% of this neutrino. A cluster that merely clips it is\n")
-        f.write("      not its reconstruction, so nothing was lost when a cut removed it -- those land in\n")
-        f.write("      no_reco_overlap instead (metadata.MIN_WOULD_HAVE_MATCHED_*)\n")
-        f.write("removed_by_cosmic_tagger : a reco cluster overlaps this neutrino well enough to have matched it AND\n")
-        f.write("                           its flash is INSIDE the beam window, but the cosmic tagger cut removed\n")
-        f.write("                           it. A selection decision, not a reconstruction failure -- the cluster\n")
-        f.write("                           was reconstructed and in time, and the tagger judged it cosmic\n")
-        f.write("reco_outside_beam_window : a reco cluster in the PRE-cut set overlaps this neutrino well enough to\n")
-        f.write("                           have matched it, but the beam-window cut removed it -- its charge-light\n")
-        f.write("                           flash is outside the window. flash_off_us is the signed distance to the\n")
-        f.write("                           nearest window edge: small => neutrino genuinely just outside the spill,\n")
-        f.write("                           large => charge-light matching gave it some cosmic's flash\n")
-        f.write("reco_no_flash_match      : same -- a pre-cut reco cluster WOULD have matched -- but charge-light\n")
-        f.write("                           matching attached no flash at all, so the beam-window filter dropped it\n")
-        f.write("broken_or_sparse_reco    : reco points DO sit on this neutrino (relaxed_ovl>0) but no single reco\n")
-        f.write("                           cluster is dense enough to reach completeness>0 -- fragmented/scattered\n")
-        f.write("                           reconstruction; n_ovl_reco says how many pieces it broke into\n")
-        f.write("no_reco_overlap_x_shift  : no 3D overlap either, BUT a reco cluster still lines up in the YZ\n")
-        f.write("                           projection. Charge-light matching sets the drift (X) coordinate from the\n")
-        f.write("                           flash time and touches nothing else, so matching in YZ while missing in\n")
-        f.write("                           3D means the separation is purely along X -- a wrong-flash fingerprint.\n")
-        f.write("                           Measured BOTH ways so a cosmic track merely crossing the neutrino's YZ\n")
-        f.write("                           region cannot fake it: yz_ovl = fraction of the TRUE cluster covered,\n")
-        f.write("                           yz_recofrac = fraction of the RECO cluster on it. yz_dx = drift offset\n")
-        f.write("no_reco_overlap          : not one reco point lands on this neutrino, in 3D OR in YZ -- simply never\n")
-        f.write("                           reconstructed. nearest_reco/min_dist/dx,dy,dz come from a KDTree search\n")
-        f.write("                           over every pre-cut reco cluster (filled for both categories above)\n")
-        f.write("unexplained              : should never appear -- a SELECTED reco cluster overlaps well enough to\n")
-        f.write("                           match yet no pair formed; means this script and the notebook have drifted\n")
+        f.write("NOTE: img_ovl is measured RELAXED (img-global is sparser than clustering-global); strict_ovl uses\n")
+        f.write("      the same >5-neighbour bar as MatchTrueToReco1to1. A category claiming a reconstruction was\n")
+        f.write("      lost needs img_ovl (relaxed) AND img_pur above 10% (metadata.IMG_MATCH_MIN_*).\n")
+        f.write("img_ovl / img_pur           : best RELAXED overlap (and its purity) of this neutrino with the\n")
+        f.write("                             IMG-GLOBAL reco -- BEFORE charge-light matching set the drift coordinate.\n")
+        f.write("                             img_match = both above 10%. img_match + a clustering cluster that lines up\n")
+        f.write("                             in YZ but not 3D = a charge-light X-shift; img_match + NOTHING lining up =\n")
+        f.write("                             the cluster was lost at the clustering stage, not shifted (-> no_reco_overlap).\n")
+        f.write("wrong_charge_light_matching : the neutrino WAS imaged (img_match) AND a clustering reco cluster of it\n")
+        f.write("                             exists, but charge-light matching set its drift (X) coordinate wrong.\n")
+        f.write("                             cl_reason: 'no flash attached' / 'wrong flash (out of window)' (a cluster\n")
+        f.write("                             with partial 3D overlap, dropped by the beam-window ID filter -- flash_off_us\n")
+        f.write("                             is how far outside), or 'drift shift (YZ aligns, X off)' (NO 3D overlap left,\n")
+        f.write("                             but a cluster still matches in YZ -- yz_ovl/yz_recofrac clear 10%, yz_dx is\n")
+        f.write("                             the drift offset). Merges the old reco_no_flash_match, no_reco_overlap_x_shift\n")
+        f.write("                             and the wrong-flash rows of reco_outside_beam_window.\n")
+        f.write("removed_by_cosmic_tagger    : a reco cluster overlaps this neutrino well enough to have matched it AND\n")
+        f.write("                             its flash is INSIDE the beam window, but the cosmic tagger cut removed it.\n")
+        f.write("reco_outside_beam_window    : defensive residual -- clustering reconstructed something imaging did not\n")
+        f.write("                             (img_match False), flash outside the window. Almost always empty.\n")
+        f.write("broken_or_sparse_reco      : reco points DO sit on this neutrino (relaxed_ovl>0) but no single reco\n")
+        f.write("                             cluster is dense enough to reach completeness>0 -- fragmented/scattered.\n")
+        f.write("no_reco_overlap            : no 3D clustering overlap AND no YZ alignment -- there is no clustering reco\n")
+        f.write("                             cluster for this neutrino at all. img_ovl/img_pur say whether IMAGING had it\n")
+        f.write("                             (imaged, lost at the clustering/charge-light stage) or not (never anywhere).\n")
+        f.write("unexplained                : should never appear -- a SELECTED reco cluster overlaps well enough to\n")
+        f.write("                             match yet no pair formed; means this script and the notebook have drifted\n")
         f.write("\n")
         f.write("channel: numu_CC / nue_CC / NC from the interacting flavor plus the first list of daughters\n")
         f.write("        (metadata.classify_neutrino_interaction). The in-volume neutrinos are also written\n")
@@ -688,20 +683,21 @@ def write_unmatched_true_neutrino_info(neutrino_rows, output_dir, filename="unma
         f.write("             cluster IDs as the event plots and the extra-reco investigation, so it cross-references\n")
         f.write(f"{'='*205}\n\n")
 
-        f.write(f"{'file':<8} {'event':<14} {'true_id':>9} {'in_vol':>7} {'channel':<9} {'category':<26} {'n_pts':>7} {'energy_MeV':>11} "
+        f.write(f"{'file':<8} {'event':<14} {'true_id':>9} {'in_vol':>7} {'channel':<9} {'category':<27} {'n_pts':>7} {'energy_MeV':>11} "
                 f"{'linearity':>10} {'ext_x':>7} {'ext_y':>7} {'ext_z':>7} "
-                f"{'strict_ovl':>11} {'relaxed_ovl':>12} {'ovl_reco_id':>12} {'n_ovl_reco':>11} {'n_ovl_inbeam':>13} "
+                f"{'strict_ovl':>11} {'relaxed_ovl':>12} {'img_ovl':>9} {'img_pur':>9} {'ovl_reco_id':>12} {'n_ovl_reco':>11} {'n_ovl_inbeam':>13} "
                 f"{'flash_us':>9} {'flash_off_us':>13} {'nearest_reco':>13} {'min_dist_cm':>12} {'mean_nn_cm':>11} "
-                f"{'dx_cm':>8} {'dy_cm':>8} {'dz_cm':>8} {'yz_reco_id':>11} {'yz_ovl':>8} {'yz_recofrac':>12} {'yz_dx_cm':>9}\n")
+                f"{'dx_cm':>8} {'dy_cm':>8} {'dz_cm':>8} {'yz_reco_id':>11} {'yz_ovl':>8} {'yz_recofrac':>12} {'yz_dx_cm':>9} {'cl_reason':<28}\n")
         for r in sorted(unmatched_rows, key=_sort_key):
             ovl_reco_id = r['best_strict_reco_cluster_id'] if r['best_strict_overlap'] > 0 \
                 else r['best_relaxed_reco_cluster_id']
             f.write(f"{r['file_name']:<8} {str(r['event']):<14} {r['true_cluster_id']:>9.0f} "
                     f"{str(r.get('vertex_in_volume', 'n/a')):>7} {str(r.get('interaction_channel') or 'n/a'):<9} "
-                    f"{r['category']:<26} "
+                    f"{r['category']:<27} "
                     f"{r['n_true_points']:>7} {r['total_true_energy']:>11.1f} {r['linearity']:>10.4f} "
                     f"{r['extent_x']:>7.1f} {r['extent_y']:>7.1f} {r['extent_z']:>7.1f} "
                     f"{r['best_strict_overlap']:>11.4f} {r['best_relaxed_overlap']:>12.4f} "
+                    f"{r.get('img_best_completeness', 0.0):>9.4f} {_fmt(r.get('img_best_purity'), '.4f'):>9} "
                     f"{_fmt(ovl_reco_id, '.3f'):>12} "
                     f"{r['n_overlapping_reco_clusters']:>11} {r['n_overlapping_in_beam_window']:>13} "
                     f"{_fmt(r['winner_flash_time'], '.4f'):>9} {_fmt(r['winner_flash_offset_us'], '.4f'):>13} "
@@ -710,7 +706,7 @@ def write_unmatched_true_neutrino_info(neutrino_rows, output_dir, filename="unma
                     f"{_fmt(r['dx']):>8} {_fmt(r['dy']):>8} {_fmt(r['dz']):>8} "
                     f"{_fmt(r.get('yz_best_reco_cluster_id'), '.3f'):>11} "
                     f"{_fmt(r.get('yz_overlap'), '.4f'):>8} {_fmt(r.get('yz_reco_frac'), '.4f'):>12} "
-                    f"{_fmt(r.get('yz_dx')):>9}\n")
+                    f"{_fmt(r.get('yz_dx')):>9} {str(r.get('charge_light_reason') or ''):<28}\n")
 
         f.write(f"\n{'='*205}\n")
         f.write("SUMMARY BY CATEGORY\n")

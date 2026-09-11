@@ -5,6 +5,7 @@ import os
 import json
 import zipfile
 import re
+import tempfile
 
 def read_true_coordinates_from_json(json_file):
     """Reads true coordinates from JSON file and returns numpy arrays."""
@@ -158,6 +159,133 @@ def ensure_data_extracted(input_dir):
     return data_dir
 
 
+# ============================================================================
+# NUECC one-event-per-zip sample (img-clus-match-tag-pr-nuecc)
+# ============================================================================
+# This production ships ONE event per zip: bee_r<run>_s<subrun>_e<event>.zip,
+# contents at data/0/0-*.json. The "0" after data/ is NOT the event number --
+# every zip uses it -- and the real (run, subrun, event) is in the file name (and
+# redundantly in each JSON's runNo/subRunNo/eventNo). The 8866 zips are grouped
+# into bee/chunk_00 .. chunk_88 (randomly, see bee/chunk_manifest.txt), each
+# further split into subchunk_00 .. of 10 zips; one job runs one chunk_NN.
+# stage_nuecc_chunks() below rewrites a chunk's subchunks into the
+# <name>/data/<k>/ tree the charge-light notebooks already loop over, so nothing
+# downstream changes.
+
+NUECC_ZIP_RE = re.compile(r'^bee_r(\d+)_s(\d+)_e(\d+)\.zip$')
+
+
+def parse_nuecc_zip_name(name):
+    """
+    (run, subrun, event) as ints from a nuecc zip name ('bee_r293_s25_e1025.zip'
+    -> (293, 25, 1025)), or None if the name does not match. The event number
+    here is the REAL one; the 'data/0' inside the zip is not it.
+    """
+    match = NUECC_ZIP_RE.match(Path(name).name)
+    if not match:
+        return None
+    return tuple(int(group) for group in match.groups())
+
+
+def _stage_nuecc_group(group_zips, out_dir, tmp_root):
+    """
+    Extract one group of (parsed, zip_path) into out_dir/data/<k>/<k>-*.json for
+    k = 0.. and write out_dir/event_map.txt (k -> run, subrun, event, zip name).
+
+    Idempotent: a data/<k>/ that already holds files is left alone. tmp_root must
+    be on the same filesystem as out_dir so the extracted payload is MOVED, not
+    copied across devices.
+    """
+    (out_dir / "data").mkdir(parents=True, exist_ok=True)
+    map_lines = []
+    for k, ((run, subrun, event), zip_path) in enumerate(group_zips):
+        map_lines.append(f"{k}\t{run}\t{subrun}\t{event}\t{zip_path.name}")
+        event_dir = out_dir / "data" / str(k)
+        if event_dir.is_dir() and any(event_dir.iterdir()):
+            continue
+        event_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=tmp_root) as tmp_name:
+            tmp = Path(tmp_name)
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(tmp)
+            src = tmp / "data" / "0"
+            if not src.is_dir():
+                print(f"Warning: {zip_path.name} has no data/0/; skipping.")
+                continue
+            for payload in sorted(src.iterdir()):
+                if not payload.is_file():
+                    continue
+                dest_name = (f"{k}-{payload.name[2:]}"
+                             if payload.name.startswith("0-") else payload.name)
+                payload.rename(event_dir / dest_name)
+        print(f"Staged {zip_path.name} -> {event_dir}")
+    (out_dir / "event_map.txt").write_text(
+        "# k\trun\tsubrun\tevent\tzip\n" + "\n".join(map_lines) + "\n")
+
+
+def _sorted_zips_in(directory):
+    """[(run, subrun, event), zip_path] for every bee_*.zip in directory, sorted."""
+    zips = []
+    for entry in Path(directory).iterdir():
+        parsed = parse_nuecc_zip_name(entry.name)
+        if parsed is not None:
+            zips.append((parsed, entry))
+    zips.sort(key=lambda item: item[0])
+    return zips
+
+
+def stage_nuecc_chunks(bee_dir, staging_root, n_files=100, chunk_size=10):
+    """
+    Lay the one-event-per-zip nuecc sample out as the <name>/data/<k>/ tree the
+    charge-light notebooks already loop over -- one staged directory per group of
+    up to chunk_size events, each with an event_map.txt (k -> run, subrun, event,
+    zip name; the renumber to 0..k-1 drops the real identity from the tree).
+
+    bee_dir is normally one bee/chunk_NN/ source group. TWO layouts are handled:
+
+    * chunk_NN/subchunk_MM/*.zip  -- the on-disc grouping. The first
+      ceil(n_files / chunk_size) subchunks (by name) are each staged into
+      staging_root/<chunk_NN>__<subchunk_MM>/data/<k>/. The staged name carries
+      the SOURCE CHUNK so several chunks can be staged into one staging_root
+      without colliding (a job over NUECC_SOURCE_CHUNKS does exactly that).
+      chunk_size should match the subchunk size (10); it only decides how many
+      subchunks n_files reaches.
+
+    * chunk_NN/*.zip (flat, no subchunk dirs) -- the first n_files zips, ordered
+      by (run, subrun, event), split into groups of chunk_size, staged into
+      staging_root/chunk<i:02d>/data/<k>/.
+
+    Each zip's data/0/0-*.json is moved to data/<k>/ and renamed 0-* -> <k>-*,
+    the shape detect_events_in_directory / read_charge_light_files_for_event
+    expect. Idempotent: a populated data/<k>/ is left alone. Returns the sorted
+    list of staged directories.
+    """
+    bee_dir = Path(bee_dir)
+    staging_root = Path(staging_root)
+    staging_root.mkdir(parents=True, exist_ok=True)
+
+    subchunks = sorted(d for d in bee_dir.iterdir()
+                       if d.is_dir() and d.name.startswith("subchunk_"))
+    staged_dirs = []
+
+    if subchunks:
+        n_wanted = max(1, -(-n_files // chunk_size))   # ceil
+        for sub_dir in subchunks[:n_wanted]:
+            out_dir = staging_root / f"{bee_dir.name}__{sub_dir.name}"
+            staged_dirs.append(out_dir)
+            _stage_nuecc_group(_sorted_zips_in(sub_dir), out_dir, staging_root)
+        return staged_dirs
+
+    zips = _sorted_zips_in(bee_dir)[:n_files]
+    n_groups = -(-len(zips) // chunk_size)
+    for group_idx in range(n_groups):
+        out_dir = staging_root / f"chunk{group_idx:02d}"
+        staged_dirs.append(out_dir)
+        _stage_nuecc_group(zips[group_idx * chunk_size:(group_idx + 1) * chunk_size],
+                           out_dir, staging_root)
+    return staged_dirs
+
+
 def read_img_global_from_json(json_file):
     """Reads combined-APA reco cluster points (img-global) from JSON file."""
     with open(json_file, 'r') as f:
@@ -295,15 +423,17 @@ _MC_TEXT_RE = re.compile(r'^(.*?)\s+(?:Edep\s+)?([\d.]+)\s*MeV$')
 
 # Newer file format's interaction-vertex root text, which adds a neutrino index
 # (to tell multiple neutrino interactions in the same event apart) and the
-# neutrino's total energy ahead of Edep. TWO producer versions are read by this
+# neutrino's total energy ahead of Edep. THREE producer versions are read by this
 # one pattern:
 #
-#   "1 numu Etot 1821.6 MeV Edep 19.8 MeV"                  (MCP2025C Fall production)
-#   "1 numu MEC Etot 953.2 MeV Edep 803.1 MeV T 1.335 us"   (Tagger-included production)
+#   "1 numu Etot 1821.6 MeV Edep 19.8 MeV"                     (MCP2025C Fall production)
+#   "1 numu MEC Etot 953.2 MeV Edep 803.1 MeV T 1.335 us"      (Tagger-included production)
+#   "1 nue MEC CC Etot 1858.8 MeV Edep 1417.9 MeV T 1.353 us"  (nuecc img-clus-match-tag production)
 #
-# The newer one inserts the interaction MODE (QE / RES / DIS / MEC / COH ...)
-# after the flavour and appends the true interaction TIME. Both are optional here
-# so the same pattern reads either file, and a producer that adds one of them
+# The second inserts the interaction MODE (QE / RES / DIS / MEC / COH ...) after
+# the flavour and appends the true interaction TIME; the third additionally
+# inserts the CURRENT (CC / NC) after the mode. All three are optional here so
+# the same pattern reads any of the files, and a producer that adds one of them
 # again does not silently break the parse -- which is exactly what happened
 # before this was relaxed: the anchored pattern simply failed to match, nu_idx
 # came out None, and every neutrino true cluster then failed to join to its
@@ -350,10 +480,13 @@ def read_sed_sce_smear_from_json(json_file):
 # empty. Named groups, so adding another optional field cannot renumber the rest.
 #
 # The (?!Etot) stops the optional mode from swallowing the "Etot" keyword when
-# the mode is absent.
+# the mode is absent; the (?!CC\b)(?!NC\b) likewise stops it swallowing the
+# current token so that "1 nue CC Etot ..." (mode absent, current present) still
+# parses.
 _MC_ROOT_TEXT_RE = re.compile(
     r'^(?P<nu_idx>\d+)\s+(?P<flavor>\S+)'
-    r'(?:\s+(?P<mode>(?!Etot)\S+))?'
+    r'(?:\s+(?P<mode>(?!Etot)(?!CC\b)(?!NC\b)\S+))?'
+    r'(?:\s+(?P<current>CC|NC))?'
     r'\s+Etot\s+(?P<etot>[\d.]+)\s*MeV'
     r'\s+Edep\s+(?P<edep>[\d.]+)\s*MeV'
     r'(?:\s+T\s+(?P<time_us>[-+\d.eE]+)\s*us)?$')
@@ -363,8 +496,11 @@ def flatten_mc_tree(mc_tree):
     """
     Flattens the nested mc.json particle ancestry tree (as returned by read_mc_json)
     into a flat list of per-particle records: {trackid, particle, energy_MeV,
-    total_energy_MeV, nu_idx, is_interaction_vertex, parent_trackid,
-    root_trackid, start_xyz, end_xyz}.
+    total_energy_MeV, nu_idx, interaction_mode, interaction_current,
+    interaction_time_us, is_interaction_vertex, parent_trackid, root_trackid,
+    start_xyz, end_xyz}. interaction_mode / interaction_current /
+    interaction_time_us are set only on interaction-vertex roots and only for the
+    producers that write them (see _MC_ROOT_TEXT_RE); None everywhere else.
 
     Interaction-vertex root nodes (is_interaction_vertex=True) are parsed with
     _MC_ROOT_TEXT_RE first (newer file format: adds nu_idx -- 1, 2, ... to tell
@@ -374,6 +510,12 @@ def flatten_mc_tree(mc_tree):
     case nu_idx/total_energy_MeV stay None -- only energy_MeV (Edep) is available.
     Non-root nodes always use _MC_TEXT_RE ("<particle> <energy> MeV"); that format
     hasn't changed between file versions.
+
+    is_interaction_vertex is True only for a TOP-LEVEL node whose text actually
+    parsed as an interaction (one of the two patterns above). The nuecc mc.json
+    carries a second top-level subtree headed "reco nu <E> MeV numu <s> nue <s>"
+    -- the reconstruction's neutrino candidate and its PID scores, not a true
+    interaction -- which matches neither pattern and is therefore NOT a vertex.
 
     Note: mc.json only lists a curated subset of trackIDs (primaries and notable
     daughters) -- most low-energy secondaries present in sed-sce_drift_smear_readout
@@ -391,6 +533,7 @@ def flatten_mc_tree(mc_tree):
         nu_idx = None
         total_energy_MeV = None
         interaction_mode = None
+        interaction_current = None
         interaction_time_us = None
 
         root_match = _MC_ROOT_TEXT_RE.match(text) if is_root else None
@@ -399,8 +542,15 @@ def flatten_mc_tree(mc_tree):
             particle = root_match.group('flavor')
             total_energy_MeV = float(root_match.group('etot'))
             energy_MeV = float(root_match.group('edep'))
-            # Only the Tagger-included format carries these; None otherwise.
+            # The Tagger-included and nuecc formats carry the mode; None for the
+            # plain MCP2025C Fall text.
             interaction_mode = root_match.group('mode')
+            # Only the nuecc img-clus-match-tag format writes the current
+            # explicitly ('CC'/'NC'); None for every earlier producer. It is a
+            # cross-check on classify_neutrino_interaction (which derives CC/NC
+            # from the flavour and the direct daughters), not a replacement --
+            # nothing downstream reads it yet.
+            interaction_current = root_match.group('current')
             time_text = root_match.group('time_us')
             interaction_time_us = float(time_text) if time_text is not None else None
         else:
@@ -409,6 +559,16 @@ def flatten_mc_tree(mc_tree):
                 particle, energy_MeV = match.group(1).strip(), float(match.group(2))
             else:
                 particle, energy_MeV = text, None
+
+        # A top-level node counts as a real interaction vertex only if its text
+        # PARSED as one -- either the "<idx> <flavor> ... Etot ... Edep ..." root
+        # form or the older "<flavor> Edep <e> MeV". The nuecc mc.json adds a
+        # second top-level subtree headed "reco nu  <E> MeV  numu <s>  nue <s>"
+        # (the reconstruction's neutrino candidate and PID scores, not a true
+        # interaction); it matches neither pattern, so without this guard
+        # build_neutrino_vertex_records would fabricate one phantom NC interaction
+        # per event from it.
+        is_interaction_vertex = is_root and (root_match is not None or match is not None)
 
         # start_xyz/end_xyz come from the node's 'data' block (cm, SAME coordinate
         # frame as sed-sce_drift_smear_readout's points -- verified by measuring
@@ -432,8 +592,9 @@ def flatten_mc_tree(mc_tree):
             # time in us. Present only in the Tagger-included production's root
             # text; None everywhere else, including on every non-root node.
             'interaction_mode': interaction_mode,
+            'interaction_current': interaction_current,
             'interaction_time_us': interaction_time_us,
-            'is_interaction_vertex': is_root,
+            'is_interaction_vertex': is_interaction_vertex,
             'parent_trackid': parent_trackid,
             'root_trackid': root_trackid,
             'start_xyz': tuple(start_xyz) if start_xyz else None,

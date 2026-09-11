@@ -242,7 +242,8 @@ def write_cosmic_index(entries, output_root, n_cosmics_seen=None,
                        min_true_energy=MIN_COSMIC_VIEW_ENERGY_MEV,
                        filename='selection_cosmics.txt',
                        dir_name=COSMIC_DIR_NAME, preamble=None,
-                       headline='SELECTED COSMIC RECO CLUSTERS -- index'):
+                       headline='SELECTED COSMIC RECO CLUSTERS -- index',
+                       bee_set_url=None):
     """
     The index: one row per figure, largest true energy first -- the biggest
     cosmics are the ones a selection most needs to explain.
@@ -297,8 +298,10 @@ def write_cosmic_index(entries, output_root, n_cosmics_seen=None,
     index_path.write_text("\n".join(lines) + "\n")
 
     link_lines = ["# BEE event display, one per figure. The same URL is printed on the",
-                  "# figure itself, where it cannot be clicked -- PNG has no hyperlinks.",
-                  ""]
+                  "# figure itself, where it cannot be clicked -- PNG has no hyperlinks."]
+    if bee_set_url:
+        link_lines.append(f"# BEE SET (whole population, one upload): {bee_set_url}")
+    link_lines.append("")
     for entry in entries:
         if entry.get('bee_url'):
             link_lines.append(f"{_relative_path(entry)}  {entry['bee_url']}")

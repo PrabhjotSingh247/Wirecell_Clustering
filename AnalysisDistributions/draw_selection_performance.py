@@ -92,14 +92,26 @@ COSMIC_MAX_COMPLETENESS_PURITY = 0.10
 PLOT_X_MAX_MEV = 3000.0
 
 # A true interaction joins the efficiency DENOMINATOR only if its cluster
-# deposited more than this, in MeV. Matches the notebook's min_cluster_energy, and
-# for the same reason: an interaction depositing less could never have survived the
-# true-side energy cut, so no selection could ever have found it. Leaving it in the
-# denominator would charge the selection for a loss that is the cut's, not its own.
+# deposited more than this, in MeV.
+#
+# 0.0 -- the notebook's cluster-level min_cluster_energy (Apply_energy_cutoff) is
+# OFF: only the per-POINT floor (min_true_point_energy, 0.02 MeV) still applies,
+# so a true cluster's energy here can be any positive number, not just >= 100.
+# This USED to match a 100 MeV min_cluster_energy, for the reason a value here
+# still has to: an interaction depositing less than what the notebook's cluster
+# cut allows to survive could never have been found by any selection, and
+# leaving it in the denominator would charge the selection for a loss that is
+# the cut's, not its own. With that cut off, nothing is excluded on those
+# grounds any more.
 #
 # Measured on the PRE-CUT cluster sum -- the same quantity the efficiency is binned
 # in -- so the denominator's membership and its x position are the one number.
-MIN_TRUE_ENERGY_MEV = 100.0
+MIN_TRUE_ENERGY_MEV = 0.0
+
+# Where the "average efficiency below / above" split in efficiency.txt is drawn,
+# in MeV of true (pre-cut) deposited energy. Reported as two integrated ratios
+# alongside the all-energy one.
+EFFICIENCY_SPLIT_MEV = 500.0
 
 _PURITY_UNMATCHED_TRUE_ID = 8888   # EvaluatePurity's "no true cluster" sentinel
 
@@ -506,7 +518,11 @@ def draw_reco_selection_stack(categorized_records, output_dir, level_name, filen
     Returns (by_key, all_energies).
     """
     components = components if components is not None else SELECTION_COMPONENTS
-    output_dir = Path(output_dir)
+    # One sub-directory per signal threshold, matching the selection_efficiency
+    # tree (see threshold_dirname): the caller draws this at every entry in
+    # EFFICIENCY_THRESHOLDS, and a flat directory made the six versions hard to
+    # tell apart. Filenames still carry threshold_tag; this is the folder above.
+    output_dir = Path(output_dir) / threshold_dirname(threshold)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     by_key, unclaimed = split_by_category(categorized_records, components, threshold)
@@ -781,7 +797,7 @@ def draw_completeness_vs_purity_colz(categorized_records, output_dir, level_name
                                      filename_prefix, apa, bins=20,
                                      reco_cuts_label='AfterBeamWindowCut',
                                      filename='selection_completeness_vs_purity_colz',
-                                     include_cosmics=True, log_scale=True):
+                                     include_cosmics=True, log_scale=False):
     """
     The same in-volume pairs as the scatter, as a 2D histogram.
 
@@ -804,12 +820,11 @@ def draw_completeness_vs_purity_colz(categorized_records, output_dir, level_name
 
     The caller draws both; they differ in filename by the '_with_cosmics' suffix.
 
-    log_scale picks the COLOUR scale, not the axes: True is the log default,
-    False adds a '_linz' version where the colour is proportional to the count.
-    Linear is the honest reading of a density -- twice the colour is twice the
-    clusters -- but only survives when no single cell dominates, which is why it
-    is the second version rather than the first. The palette is the same either
-    way, so the two can be laid side by side.
+    log_scale picks the COLOUR scale, not the axes. It now defaults to False
+    (linear -- the honest reading of a density, twice the colour is twice the
+    clusters) and the linear version carries NO filename suffix; the log-z
+    version was dropped from the standard job output. Pass log_scale=True to get
+    it back, which adds a '_logz' suffix.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -840,12 +855,11 @@ def draw_completeness_vs_purity_colz(categorized_records, output_dir, level_name
     square = np.linspace(0.0, 1.0, bins + 1)
     edges = (np.concatenate(([_COSMIC_BOX_LO], square)) if include_cosmics else square)
     fig, ax = plt.subplots(figsize=(10, 8))
-    # Empty bins left blank (cmin=1) either way. The colour scale defaults to LOG
-    # because the cosmic cell holds every unmatched cluster in one bin while a
-    # typical pair cell holds one or two, so on a linear scale the cosmics take
-    # the whole colour range and the pair distribution -- the thing this plot is
-    # for -- goes flat. That argument is weakest on the no-cosmics version, which
-    # is where the linear one is worth reading.
+    # Empty bins left blank (cmin=1) either way. The colour scale is LINEAR by
+    # default now (log_scale=False). The log-z version -- which kept the pair
+    # distribution readable when the single cosmic cell holds every unmatched
+    # cluster and would otherwise take the whole colour range -- was dropped from
+    # the standard job output; pass log_scale=True to bring it back.
     counts, _, _, mesh = ax.hist2d(purity, completeness, bins=[edges, edges],
                                    cmap=_COLZ_CMAP,
                                    norm=(LogNorm() if log_scale else None), cmin=1)
@@ -872,7 +886,7 @@ def draw_completeness_vs_purity_colz(categorized_records, output_dir, level_name
                 ha='center', va='center',
                 fontsize=_LEGEND_FONTSIZE - 2, fontweight='bold')
 
-    suffix = ('_with_cosmics' if include_cosmics else '') + ('' if log_scale else '_linz')
+    suffix = ('_with_cosmics' if include_cosmics else '') + ('_logz' if log_scale else '')
     path = output_dir / f"{filename}{suffix}_{reco_cuts_label}_{filename_prefix}_{apa}.png"
     fig.savefig(path, dpi=150, bbox_inches='tight', pad_inches=0.3)
     plt.close(fig)
@@ -1475,10 +1489,24 @@ def draw_selection_efficiency(efficiency, output_dir, level_name, filename_prefi
     denominator = efficiency['denominator'].astype(float)
     filled = denominator > 0
 
+    # Short names for the overall-efficiency box, keyed like EFFICIENCY_CURVES.
+    _OVERALL_NAMES = {'numerator_high': 'Signal', 'numerator_any': 'All Selected',
+                      'numerator_relaxed': 'Signal (relaxed)'}
+    n_denominator = efficiency.get('n_denominator', 0)
+    overall_lines = []
+
     fig, ax = plt.subplots(figsize=(10, 7))
     for numerator_key in curves:
         style = EFFICIENCY_CURVES[numerator_key]
         label = style['label']
+        # Overall = numerator TOTAL / denominator TOTAL (includes any interaction
+        # above the plot axis), i.e. the single number quoted for the channel --
+        # the same value efficiency.txt's AVERAGE EFFICIENCY block carries.
+        n_num = efficiency.get('n_' + numerator_key[len('numerator_'):])
+        if n_num is not None and n_denominator:
+            overall_lines.append(
+                f"{_OVERALL_NAMES.get(numerator_key, numerator_key)} Selection Efficiency = "
+                f"{100.0 * n_num / n_denominator:.1f}%")
         if numerator_key == 'numerator_high':
             # threshold_label already carries the metric names, so no fixed prefix
             # here -- adding one produced "completeness & purity > completeness >
@@ -1518,6 +1546,14 @@ def draw_selection_efficiency(efficiency, output_dir, level_name, filename_prefi
     ax.set_ylim(0, 1.25)
     ax.axhline(1.0, color='black', linewidth=1.0, linestyle=':')
     ax.legend(fontsize=_LEGEND_FONTSIZE, loc='upper right', framealpha=0.9)
+
+    # Overall (integrated) efficiency for each curve, top-left so it clears the
+    # upper-right legend.
+    if overall_lines:
+        ax.text(0.03, 0.97, "\n".join(overall_lines),
+                transform=ax.transAxes, ha='left', va='top',
+                fontsize=_LEGEND_FONTSIZE - 1, family='monospace',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.88, edgecolor='0.6'))
 
     bin_width = efficiency_bin_width_label(efficiency)
     tag = threshold_tag(efficiency.get('threshold', HIGH_SIGNAL_THRESHOLD))
@@ -1868,6 +1904,34 @@ def write_selection_performance_info(by_key, categorized_records, efficiencies, 
     return path
 
 
+def _efficiency_totals(efficiency, split_mev=EFFICIENCY_SPLIT_MEV):
+    """
+    (all, below, above): three {'denom','high','any'} dicts for one channel's
+    efficiency, split at split_mev of true deposited energy.
+
+    'all' is the integrated count (includes any interaction above the plot axis).
+    'below' sums the histogram bins whose left edge is < split_mev; 'above' is
+    the remainder, so an interaction beyond the plot axis -- always high energy --
+    lands there. A bin that straddles the split (only possible when split_mev is
+    off the 100 MeV grid) is assigned by its left edge.
+    """
+    edges = np.asarray(efficiency['edges'])
+    below_bins = edges[:-1] < split_mev
+    counts = {'denom': efficiency['denominator'],
+              'high':  efficiency['numerator_high'],
+              'any':   efficiency['numerator_any']}
+    total = {'denom': efficiency['n_denominator'],
+             'high':  efficiency['n_high'],
+             'any':   efficiency['n_any']}
+    below = {k: int(np.asarray(v)[below_bins].sum()) for k, v in counts.items()}
+    above = {k: total[k] - below[k] for k in total}
+    return total, below, above
+
+
+def _ratio(numerator, denominator):
+    return numerator / denominator if denominator else float('nan')
+
+
 def write_efficiency_summary(efficiencies_by_width, output_dir, level_name,
                              reco_cuts_label='AfterBeamWindowCut', filename='efficiency.txt',
                              efficiencies_by_multiplicity=None, vertex_records=None):
@@ -1952,6 +2016,39 @@ def write_efficiency_summary(efficiencies_by_width, output_dir, level_name,
             for note in notes:
                 lines.append(f"    - {note}")
 
+    # AVERAGE efficiency: the integrated ratio (sum of numerator bins / sum of
+    # denominator bins), which is the denominator-weighted mean of the per-bin
+    # efficiencies -- the single number to quote -- and the same ratio split at
+    # EFFICIENCY_SPLIT_MEV. ALL CHANNELS pools the signal channels' counts.
+    split = EFFICIENCY_SPLIT_MEV
+    lines.append("")
+    lines.append("-" * 92)
+    lines.append(f"AVERAGE EFFICIENCY -- integrated ratio, split at {split:.0f} MeV of true deposited energy")
+    lines.append("-" * 92)
+    lines.append("The integrated ratio = sum(numerator bins) / sum(denominator bins), i.e. the")
+    lines.append("denominator-weighted mean of the per-bin efficiencies. Each range shows")
+    lines.append(f"'high' (completeness AND purity > {HIGH_SIGNAL_THRESHOLD:.0%}) / 'g+b' (good+bad, any pair).")
+    lines.append(f"Interactions above the {ENERGY_AXIS_MAX_MEV:.0f} MeV plot axis count in the >= {split:.0f} MeV range.")
+    lines.append("")
+    lines.append(f"  {'channel':<13s}{'all: high / g+b':>20s}{f'<{split:.0f}: high / g+b':>21s}{f'>={split:.0f}: high / g+b':>22s}")
+    lines.append("  " + "-" * 74)
+
+    def _avg_row(label, total, below, above):
+        parts = []
+        for scope in (total, below, above):
+            parts.append(f"{_ratio(scope['high'], scope['denom']):>6.4f} / "
+                         f"{_ratio(scope['any'], scope['denom']):>6.4f}")
+        return f"  {label:<13s}{parts[0]:>20s}{parts[1]:>21s}{parts[2]:>22s}"
+
+    pooled = {scope: {'denom': 0, 'high': 0, 'any': 0} for scope in ('all', 'below', 'above')}
+    for efficiency in efficiencies or []:
+        total, below, above = _efficiency_totals(efficiency, split)
+        for name, d in (('all', total), ('below', below), ('above', above)):
+            for k in ('denom', 'high', 'any'):
+                pooled[name][k] += d[k]
+        lines.append(_avg_row(efficiency['channel'], total, below, above))
+    lines.append(_avg_row('ALL CHANNELS', pooled['all'], pooled['below'], pooled['above']))
+
     # Split by how many signal neutrinos the event held. An efficiency measured on a
     # sample that is mostly single-neutrino events describes single-neutrino events;
     # this is what says whether the two classes actually differ.
@@ -2009,6 +2106,79 @@ def write_efficiency_summary(efficiencies_by_width, output_dir, level_name,
         lines.append(f"  {'TOTAL (binned)':<20s}{totals[0]:>13d}{totals[1]:>13d}"
                      f"{totals[1] / totals[0]:>11.4f}{totals[2]:>11d}{totals[2] / totals[0]:>14.4f}")
     lines.append("=" * 92)
+
+    with open(path, 'w') as f:
+        f.write("\n".join(lines) + "\n")
+    return path
+
+
+def write_efficiency_by_threshold_summary(binned_by_threshold, output_dir, level_name,
+                                          reco_cuts_label='AfterBeamWindowCut',
+                                          filename='efficiency_by_threshold.txt'):
+    """
+    The same per-bin numerator/denominator table as write_efficiency_summary,
+    written once for EVERY entry in EFFICIENCY_THRESHOLDS rather than the
+    default (completeness & purity > 80%) only.
+
+    write_efficiency_summary is deliberately left alone -- it is the one-glance
+    default-threshold summary every run has always had -- this is the extra
+    file for when a comparison at a DIFFERENT signal definition (e.g.
+    completeness_gt_60pc, purity unconstrained) is needed and would otherwise
+    require re-running the job again: the numbers are cheap to histogram (they
+    come from each pair's own completeness/purity, already computed) so nothing
+    stops writing all six now that the job is already doing the work.
+
+    binned_by_threshold: {channel: {threshold: build_selection_efficiency(...)}}
+    at whatever bin width/rebinning the caller wants recorded (this function
+    does not rebin) -- pass the notebook's own binned_by_threshold from inside
+    the EFFICIENCY_BINNINGS_SELECTED loop to match exactly what a figure at
+    that binning drew. numerator_any does not depend on the threshold (it is
+    "any in-volume pair, any quality") and is printed at every threshold anyway
+    so each block is self-contained and diffable against efficiency.txt.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / filename
+
+    lines = ["=" * 92,
+             f"SELECTION EFFICIENCY BY THRESHOLD ({level_name}), reco selection: {reco_cuts_label}",
+             "=" * 92, "",
+             "Same quantities as efficiency.txt (high signal = completeness AND purity",
+             "above the threshold below; good+bad = any in-volume pair, any quality --",
+             "identical at every threshold, repeated here so each block stands alone),",
+             "at every signal definition this codebase draws (see EFFICIENCY_THRESHOLDS),",
+             "at whichever bin width and rebinning this file was written for.", ""]
+
+    for channel, by_threshold in binned_by_threshold.items():
+        for threshold in EFFICIENCY_THRESHOLDS:
+            efficiency = by_threshold.get(threshold)
+            if efficiency is None or not efficiency['n_denominator']:
+                continue
+            lines.append("-" * 92)
+            lines.append(f"{channel} -- {threshold_label(threshold)} "
+                         f"[{threshold_dirname(threshold)}]")
+            lines.append("-" * 92)
+            lines.append(f"  {'energy bin [MeV]':<20s}{'denominator':>13s}{'high signal':>13s}"
+                         f"{'eff high':>11s}{'good+bad':>11s}{'eff good+bad':>14s}")
+            edges = efficiency['edges']
+            for i in range(len(edges) - 1):
+                d = int(efficiency['denominator'][i])
+                if d == 0:
+                    continue
+                h, a = int(efficiency['numerator_high'][i]), int(efficiency['numerator_any'][i])
+                lines.append(f"  {f'{edges[i]:.0f} - {edges[i+1]:.0f}':<20s}{d:>13d}{h:>13d}"
+                             f"{h / d:>11.4f}{a:>11d}{a / d:>14.4f}")
+            totals = (int(efficiency['denominator'].sum()), int(efficiency['numerator_high'].sum()),
+                      int(efficiency['numerator_any'].sum()))
+            lines.append(f"  {'TOTAL (binned)':<20s}{totals[0]:>13d}{totals[1]:>13d}"
+                         f"{totals[1] / totals[0]:>11.4f}{totals[2]:>11d}{totals[2] / totals[0]:>14.4f}")
+            # Integrated (all energies, including any interaction above the plot
+            # axis) -- the number a comparison plot's text box should quote,
+            # exactly like efficiency.txt's top summary table does for thr80.
+            n_d, n_h, n_a = efficiency['n_denominator'], efficiency['n_high'], efficiency['n_any']
+            lines.append(f"  {'TOTAL (integrated)':<20s}{n_d:>13d}{n_h:>13d}"
+                         f"{n_h / n_d:>11.4f}{n_a:>11d}{n_a / n_d:>14.4f}")
+            lines.append("")
 
     with open(path, 'w') as f:
         f.write("\n".join(lines) + "\n")

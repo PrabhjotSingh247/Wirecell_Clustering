@@ -665,7 +665,8 @@ def draw_stacked_true_energy(true_records, output_dir, level_name, filename_pref
                              bin_width=ENERGY_BIN_WIDTH_MEV,
                              reco_records=None, reco_cuts_label=DEFAULT_RECO_CUTS_LABEL,
                              y_top=None, variant_label=None, y_scale='log',
-                             filename='signal_background_true_energy_stack'):
+                             filename='signal_background_true_energy_stack',
+                             title=None):
     """
     The stacked true-energy histogram: x = true deposited cluster energy in
     bin_width MeV bins, y = number of clusters, one stack band per component.
@@ -696,6 +697,8 @@ def draw_stacked_true_energy(true_records, output_dir, level_name, filename_pref
         versions of one figure coexist. Log is the readable one when the reco
         overlay is uncut (it runs 20x above the stack); linear is the one where
         bin heights can be compared by area.
+    - title: the base plot title. None gives "Signal & Background"; the reco
+        selection and variant_label are still appended to whatever is passed.
 
     WHY THE RECO CURVE IS AN OVERLAY AND NOT A BAND. The stack partitions ONE
     population -- true clusters -- so its bands add to a meaningful total. A reco
@@ -779,7 +782,7 @@ def draw_stacked_true_energy(true_records, output_dir, level_name, filename_pref
     # The reco selection is named ONLY when a reco overlay is drawn. Without one
     # nothing on the figure depends on it -- the stack is pure truth -- and naming
     # it would claim a dependence the plot does not have.
-    title = "Signal & Background"
+    title = title or "Signal & Background"
     if reco_values:
         title += f" -- reco: {reco_cuts_label}"
     if variant_label:
