@@ -8,46 +8,60 @@ neutrinos form a 1-to-1 pair, so 11 are unaccounted for.
 
 Every true neutrino cluster is categorized via
 metadata.categorize_unmatched_true_neutrinos() into:
-  - matched                  : found its MatchTrueToReco1to1 reco partner (not a failure)
-  - reco_outside_beam_window : a PRE-cut reco cluster overlaps it well enough to have
-                                matched, but the beam-window cut removed it -- its
-                                charge-light flash sits outside the window (the flash
-                                offset separates "neutrino just outside the spill" from
-                                "charge-light handed it a cosmic's flash")
-  - reco_no_flash_match      : same, but charge-light matching attached NO flash at all,
-                                so the beam-window filter dropped it for having no time
-  - broken_or_sparse_reco    : reco charge DOES sit on the neutrino, but split into pieces
-                                too sparse to clear the completeness neighbor threshold
-                                (the "highly scattered / broken neutrino" case)
-  - no_reco_overlap          : not one reco point lands on it; nearest-reco offset
-                                (dx-dominated => X-mis-assignment candidate) is reported
+  - matched                     : found its MatchTrueToReco1to1 reco partner (not a failure)
+  - wrong_charge_light_matching : the neutrino WAS imaged (img-global reco overlaps the
+                                   sed-sce truth well) AND a clustering reco cluster of it
+                                   exists, but charge-light matching set its drift (X)
+                                   coordinate wrong -- no flash bridged, a flash outside
+                                   the window, or a flash so wrong the cluster has no 3D
+                                   overlap left but still lines up in YZ. Merges the old
+                                   reco_no_flash_match, no_reco_overlap_x_shift and the
+                                   wrong-flash rows of reco_outside_beam_window
+  - removed_by_cosmic_tagger    : reconstructed and in time, but the cosmic tagger cut it
+  - reco_outside_beam_window    : defensive residual -- clustering reconstructed something
+                                   imaging did not, flash outside the window. Almost always empty
+  - broken_or_sparse_reco       : reco charge sits on the neutrino, split too sparse to
+                                   clear the completeness neighbor threshold
+  - no_reco_overlap             : no clustering reco cluster for this neutrino at all -- no
+                                   3D overlap AND no YZ alignment. img_ovl / img_pur say
+                                   whether imaging had it (lost at the clustering stage) or
+                                   not (never reconstructed anywhere)
 
 The diagnosis works by re-running the overlap test against the FULL
-pre-beam-window-cut reco set, so each failure is attributed to the stage that
-actually dropped it. Writes event/file/job-level unmatched_true_neutrino_info.txt
-tables (writeinformation.write_unmatched_true_neutrino_info) and event/file/job-level
-bar charts (DrawRecoTrueClusters.DrawUnmatchedTrueNeutrinoBreakdown -- true
-neutrinos vs. selected reco vs. pairs on top, matched vs. not matched in the
-middle, reasons on the bottom), plus per-event XZ/YZ/XY spatial plots
+pre-beam-window-cut reco set AND against the img-global (pre charge-light-
+matching) reco, so each failure is attributed to the stage that actually
+dropped it -- see metadata.categorize_unmatched_true_neutrinos' IMG-LEVEL
+CROSS-CHECK. ALL output lives at JOB level, under one directory --
+in_volume_neutrinos/ -- rather than also being duplicated per event or per file:
+a per-event/per-file copy of the same aggregated charts was exactly the
+chunk/subchunk-cluttered "head directory" tree that used to sit beside it and
+has been removed. Event level still does its own pass over every event (it has
+to, to find which events have an unmatched neutrino and draw their spatial
+plot), it just no longer writes a breakdown chart/pies/info.txt of its own.
+
+Writes job-level unmatched_true_neutrino_info.txt tables
+(writeinformation.write_unmatched_true_neutrino_info), a job-level bar chart
+(DrawRecoTrueClusters.DrawUnmatchedTrueNeutrinoBreakdown -- true neutrinos vs.
+selected reco vs. pairs on top, matched vs. not matched in the middle, reasons on
+the bottom), plus per-event XZ/YZ/XY spatial plots
 (DrawRecoTrueClusters.DrawUnmatchedTrueNeutrinos, cluster IDs in the legend) for
 every event with at least one unmatched true neutrino.
 
-SPLIT BY POPULATION. Every one of those outputs is written once per population,
-at each level (see POPULATIONS below):
+SPLIT BY POPULATION. Every one of those outputs (pies, breakdown chart, info.txt,
+flash-time plot) is written once per population (see POPULATIONS below) --
+IN-VOLUME, BY INTERACTION CHANNEL ONLY:
 
-  <level>/                                                    all true neutrinos
-  <level>/by_vertex_volume/in_volume/                         vertex in the box
-  <level>/by_vertex_volume/out_volume/                        vertex outside it
-  <level>/by_vertex_volume/in_volume/by_interaction_channel/  numu_CC, nue_CC, NC
-                                                              (in-volume only)
+  in_volume_neutrinos/numu_CC/    vertex in volume, numu CC
+  in_volume_neutrinos/nue_CC/     vertex in volume, nue CC
+  in_volume_neutrinos/NC/         vertex in volume, NC
 
-Volume first, because the two fail differently: an out-of-volume interaction only
-ever deposits the part of itself that leaked into the active volume, so "no reco
-overlap" means something different there than for a vertex sitting in the middle
-of the detector, and mixing them hides that. Then the in-volume neutrinos by
-interaction channel, since those are the ones fully inside the detector -- a
-failure there is a statement about reconstructing that channel rather than about
-how much of the interaction happened to land inside.
+No 'all' and no plain in/out-of-volume population any more: a failure means
+something different for an out-of-volume interaction (it only ever deposits the
+part of itself that leaked into the active volume) than for one fully inside the
+detector, so mixing them hides that, and the channel split is what the per-event
+spatial plots (below) are organised under. Every population here is in-volume, so
+the top directory itself says so (in_volume_neutrinos) rather than repeating an
+'in_volume' segment under it on every path.
 
 Only the TRUE side is split. The reco set is never cut, so a category assignment
 is identical in every copy (it IS the same row), and the selected-reco bar in the
@@ -56,10 +70,36 @@ what all of these neutrinos were matched against. There is deliberately no
 reco-side version of this split: with no vertex reconstruction, a reco cluster has
 no volume and no channel of its own.
 
+PER-EVENT SPATIAL PLOTS live one level deeper than the channel's own
+pies/info.txt: channel, then FAILURE CATEGORY, then chunk and event -- so
+browsing one category under one channel shows only the events that actually
+belong to it, never a bare chunk/subchunk directory sitting directly under the
+channel:
+
+  in_volume_neutrinos/<channel>/<category>/<chunk>/event_<NNN>/
+      unmatched_true_neutrinos_event<N>_Combined.png
+      bee_link.txt        <- this ONE event's url, inside this (channel, category) BEE set
+
+Only events with >=1 unmatched neutrino of that channel AND that category get a
+directory -- a matched neutrino needs no picture, so nothing is drawn or saved
+for it. An event whose neutrinos fail two different ways is filed once under
+each category (same plot, so nothing new to look at, just findable from either).
+
+BEE SETS -- see write_unmatched_bee_sets. Per CHANNEL:
+  in_volume_neutrinos/<channel>/<category>/bee_link.txt
+      one set per failure category under that channel (removed_by_cosmic_tagger,
+      reco_outside_beam_window, ...) -- every event of that channel with that
+      category, in one upload.
+  in_volume_neutrinos/<channel>/bee_link_all_categories.txt
+      one set of every unmatched event under that channel, any category.
+There is no set spanning multiple channels -- a link always answers "this channel,
+this category" or "this channel, everything".
+
 Run directly: python investigate_unmatched_true_neutrinos.py
-Output: multi_file_plots_charge_light_matching/unmatched_true_neutrino_investigation_{timestamp}/
+Output: multi_file_plots_charge_light_matching/unmatched_true_neutrino_investigation/
+        <SAMPLE_NAME>/{timestamp}/   (SAMPLE_NAME = NuECC_Sample / NuMuCC_Sample / ...)
 """
-import re
+import time
 import numpy as np
 from datetime import datetime
 from pathlib import Path
@@ -94,6 +134,7 @@ from DrawRecoTrueClusters import (DrawUnmatchedTrueNeutrinos, DrawUnmatchedTrueN
                                   DrawUnmatchedSelectionEfficiency)
 from DrawRecoTrueFlashes import (BEAM_WINDOW_MIN_US, BEAM_WINDOW_MAX_US,
                                   draw_unmatched_neutrino_flash_times)
+from build_bee_set_from_links import build_population_bee_set
 
 # ============================================================================
 # CONFIG -- same selection/beam-window-cut settings as
@@ -101,11 +142,35 @@ from DrawRecoTrueFlashes import (BEAM_WINDOW_MIN_US, BEAM_WINDOW_MAX_US,
 # investigate_extra_reco_clusters.py, so counts here are directly comparable to
 # both that notebook's job summary and the extra-reco investigation.
 # ============================================================================
-PARENT_DIR  = Path("Haiwang_files_charge_light_matching_Tagger_Included_MCP2025C_FallProd_100files")
-TARGET_FILE = "all"   # "all" for every file subdirectory with a data/ folder, or "file0"/"file1"/...
+# nuecc: point at the staging tree (chunk_NN__subchunk_MM/data/<k>/ dirs staged
+# by readfiles.stage_nuecc_chunks -- run SignalBackground_Distributions or a
+# Draw_* CosmicTagger notebook first to stage). Set back to the Haiwang path for
+# the tagger sample.
+#
+# SAMPLE_NAME names the per-sample output subdirectory under OUTPUT_DIR, so a
+# later run over a different production lands beside this one rather than on top
+# of it. Change PARENT_DIR and SAMPLE_NAME together:
+#   nuecc  -> "img-clus-match-tag-pr-nuecc-1000file-2026-08-29/staging"      + "NuECC_Sample"
+#   numucc -> "img-clus-match-tag-pr-mc-1000file-sync-2026-08-30/staging"    + "NuMuCC_Sample"
+# The staging tree is built by readfiles.stage_nuecc_chunks (run a
+# SignalBackground / Draw_* CosmicTagger notebook, or call it directly, on the
+# source chunk first -- both samples share the one-event-per-zip layout).
+PARENT_DIR  = Path("/Volumes/My Passport/Research_Life/Experiment/SBND/"
+                   "Wirecell_Reconstruction/Samples/"
+                   "img-clus-match-tag-pr-mc-1000file-sync-2026-08-30/staging")
+SAMPLE_NAME = "NuMuCC_Sample"
+# "first 10 chunks" -- chunk_00 through chunk_09, every subchunk of each (10
+# subchunks/chunk, 10 events/subchunk => 100 files, 1000 events), combined into
+# one run -- same scope as every other "first 10 chunks" job in this project.
+FIRST_10_CHUNKS = [f"chunk_{c:02d}__subchunk_{s:02d}" for c in range(10) for s in range(10)]
+FIRST_15_CHUNKS = [f"chunk_{c:02d}__subchunk_{s:02d}" for c in range(15) for s in range(10)]
+CHUNK_00        = [f"chunk_00__subchunk_{s:02d}" for s in range(10)]   # one whole chunk (100 files)
+
+TARGET_FILE = FIRST_15_CHUNKS   # "all" for every file subdirectory with a data/ folder,
+                                # one name to test on, or a list of names (CHUNK_00 / FIRST_10_CHUNKS / FIRST_15_CHUNKS)
 EVENT_LOW   = None    # None = auto-detect from each file's data/ (all events present)
 EVENT_HIGH  = None    # exclusive; None = auto-detect
-OUTPUT_DIR  = Path("multi_file_plots_charge_light_matching/unmatched_true_neutrino_investigation")
+OUTPUT_DIR  = Path("multi_file_plots_charge_light_matching/unmatched_true_neutrino_investigation") / SAMPLE_NAME
 APA_LABEL   = "Combined"
 
 radius_completeness        = 2
@@ -142,25 +207,17 @@ b_draw_event_level_plots = True   # per-event XZ/YZ/XY plots for events with >=1
 # 'volume'/'channel' are the labels a row must carry to belong; None means that
 # axis is not applied.
 POPULATIONS = [
-    # IN-VOLUME ONLY. The 'all' and out-of-volume populations are deliberately
-    # absent: this run is about SIGNAL, and an out-of-volume interaction only ever
-    # deposits the part of itself that leaked into the active volume, so its
-    # failure modes mean something different and mixing them in blurs the answer.
-    # Restore the two commented-out entries to get the full split back.
-    # {'key': 'all',      'volume': None, 'channel': None, 'subdir': None, 'label': None},
-    # {'key': 'out',      'volume': 'out','channel': None,
-    #  'subdir': Path("by_vertex_volume/out_volume"), 'label': 'vertex out of volume'},
-    {'key': 'in',         'volume': 'in',  'channel': None,
-     'subdir': Path("by_vertex_volume/in_volume"),                          'label': 'vertex in volume'},
+    # IN-VOLUME, BY INTERACTION CHANNEL ONLY -- see the module docstring. 'subdir'
+    # is now flat (just the channel name): it is both the pie/info.txt directory
+    # AND the top directory the per-event spatial plots nest under (each
+    # category, then chunk/event, under it), so a reader who wants "every nue CC
+    # failure" opens exactly one directory for both.
     {'key': 'in_numu_CC', 'volume': 'in',  'channel': 'numu_CC',
-     'subdir': Path("by_vertex_volume/in_volume/by_interaction_channel/numu_CC"),
-     'label': 'vertex in volume, numu CC'},
+     'subdir': Path("numu_CC"), 'label': 'vertex in volume, numu CC'},
     {'key': 'in_nue_CC',  'volume': 'in',  'channel': 'nue_CC',
-     'subdir': Path("by_vertex_volume/in_volume/by_interaction_channel/nue_CC"),
-     'label': 'vertex in volume, nue CC'},
+     'subdir': Path("nue_CC"), 'label': 'vertex in volume, nue CC'},
     {'key': 'in_NC',      'volume': 'in',  'channel': 'NC',
-     'subdir': Path("by_vertex_volume/in_volume/by_interaction_channel/NC"),
-     'label': 'vertex in volume, NC'},
+     'subdir': Path("NC"), 'label': 'vertex in volume, NC'},
 ]
 
 
@@ -181,11 +238,14 @@ def population_rows(neutrino_rows, population, volume_map, channel_map):
 
 def find_input_files():
     """Same discovery rule as investigate_extra_reco_clusters.py's find_input_files --
-    kept local since this script is standalone by design."""
-    if TARGET_FILE != "all":
-        return [TARGET_FILE]
-    return [d.name for d in sorted(PARENT_DIR.iterdir())
-            if d.is_dir() and (d / "data").is_dir()]
+    kept local since this script is standalone by design. TARGET_FILE may be
+    "all", one file name, or a list of file names (e.g. FIRST_10_CHUNKS)."""
+    if TARGET_FILE == "all":
+        return [d.name for d in sorted(PARENT_DIR.iterdir())
+                if d.is_dir() and (d / "data").is_dir()]
+    if isinstance(TARGET_FILE, (list, tuple)):
+        return list(TARGET_FILE)
+    return [TARGET_FILE]
 
 
 def find_events(file_name):
@@ -245,7 +305,8 @@ def group_reco_with_provenance(predicted_points):
 def render_level_outputs(neutrino_rows, volume_map, channel_map, n_selected_reco, level_dir,
                          level_name, filename_prefix, file_name=None,
                          clusters_true=None, clusters_reco_all=None, event=None,
-                         draw=True, always_write_breakdown=True):
+                         draw=True, always_write_breakdown=True,
+                         event_plot_root=None, spatial_plot_entries=None, spatial_only=False):
     """
     Every output of one level (event, file or job), written once per vertex-volume
     population: all true neutrinos, then the in-volume and out-of-volume subsets.
@@ -271,6 +332,21 @@ def render_level_outputs(neutrino_rows, volume_map, channel_map, n_selected_reco
     - always_write_breakdown: the breakdown chart is drawn even when nothing is
       unmatched (event level does this: "all matched" is a result worth seeing);
       the info table and spatial/flash plots still need >=1 unmatched row
+    - event_plot_root: when given (the in-volume-neutrinos summary dir, event
+      level only), the per-event spatial plot is written to
+      event_plot_root/<channel>/<category>/<file_name>/event_<NNN>/ instead of
+      pop_dir -- see the module docstring's PER-EVENT SPATIAL PLOTS section.
+    - spatial_plot_entries: a list this function APPENDS to (in place) with one
+      dict per spatial plot actually drawn -- {'chunk', 'event', 'channel',
+      'category', 'plot_dir'} -- so the caller can write a per-event BEE link
+      into plot_dir once the BEE sets exist (built after every event is
+      processed).
+    - spatial_only: True skips the breakdown chart, pies, efficiency curves,
+      info.txt and flash-time plot entirely -- only the per-event spatial plot
+      (and its spatial_plot_entries record) is produced. Event level uses this:
+      those per-population summaries are only wanted once, aggregated, at job
+      level -- a per-event copy under the file's own directory tree is exactly
+      the "chunk/subchunk in the head directory" clutter that was removed.
 
     Returns {population key: number of unmatched rows in that population}.
     """
@@ -287,157 +363,174 @@ def render_level_outputs(neutrino_rows, volume_map, channel_map, n_selected_reco
         if population['subdir'] is not None and not pop_rows:
             continue
 
-        pop_dir = level_dir if population['subdir'] is None else level_dir / population['subdir']
+        # level_dir is None for the spatial-only event-level call (no per-event
+        # directory tree of its own any more): pop_dir is then never actually
+        # used (event_plot_root always wins below), so it stays None too rather
+        # than erroring on None / population['subdir'].
+        if level_dir is None:
+            pop_dir = None
+        elif population['subdir'] is None:
+            pop_dir = level_dir
+        else:
+            pop_dir = level_dir / population['subdir']
         pop_level_name = level_name if not population['label'] else f"{level_name} ({population['label']})"
 
-        if draw and (always_write_breakdown or unmatched_by_population[pop_key] > 0):
-            DrawUnmatchedTrueNeutrinoBreakdown(pop_rows, n_selected_reco, pop_dir, APA_LABEL,
-                                                pop_level_name, filename_prefix, file_name=file_name)
-            # The same two splits as the bar chart's lower panels, as pies, in
-            # their own files -- see DrawUnmatchedTrueNeutrinoPies.
-            DrawUnmatchedTrueNeutrinoPies(pop_rows, pop_dir, APA_LABEL,
-                                          pop_level_name, filename_prefix, file_name=file_name)
-            # Efficiency curves at JOB level only: a 200 MeV bin holds one or two
-            # interactions in a single event, so per-event and per-file copies
-            # would be noise with error bands wider than the axis.
-            if level_name.lower().startswith('job'):
-                DrawUnmatchedSelectionEfficiency(pop_rows, pop_dir, APA_LABEL,
-                                                 pop_level_name, filename_prefix,
-                                                 file_name=file_name)
+        if not spatial_only:
+            if draw and (always_write_breakdown or unmatched_by_population[pop_key] > 0):
+                DrawUnmatchedTrueNeutrinoBreakdown(pop_rows, n_selected_reco, pop_dir, APA_LABEL,
+                                                    pop_level_name, filename_prefix, file_name=file_name)
+                # The same two splits as the bar chart's lower panels, as pies, in
+                # their own files -- see DrawUnmatchedTrueNeutrinoPies.
+                DrawUnmatchedTrueNeutrinoPies(pop_rows, pop_dir, APA_LABEL,
+                                              pop_level_name, filename_prefix, file_name=file_name)
+                # Efficiency curves at JOB level only: a 200 MeV bin holds one or two
+                # interactions in a single event, so per-event and per-file copies
+                # would be noise with error bands wider than the axis.
+                if level_name.lower().startswith('job'):
+                    DrawUnmatchedSelectionEfficiency(pop_rows, pop_dir, APA_LABEL,
+                                                     pop_level_name, filename_prefix,
+                                                     file_name=file_name)
 
-        if unmatched_by_population[pop_key] > 0:
-            write_unmatched_true_neutrino_info(pop_rows, pop_dir)
-            if draw:
-                draw_unmatched_neutrino_flash_times(pop_rows, pop_dir, APA_LABEL,
-                                                     pop_level_name, filename_prefix, file_name=file_name)
-                if clusters_true is not None and event is not None:
-                    # Full cluster dicts on purpose: the drawer indexes into them
-                    # by the ids on the rows it was given.
-                    DrawUnmatchedTrueNeutrinos(clusters_true, pop_rows, event, APA_LABEL, pop_dir,
-                                                file_name=file_name, clusters_reco_all=clusters_reco_all)
+            if unmatched_by_population[pop_key] > 0:
+                write_unmatched_true_neutrino_info(pop_rows, pop_dir)
+                if draw:
+                    draw_unmatched_neutrino_flash_times(pop_rows, pop_dir, APA_LABEL,
+                                                         pop_level_name, filename_prefix, file_name=file_name)
+
+        if (draw and unmatched_by_population[pop_key] > 0
+                and clusters_true is not None and event is not None):
+            # event_plot_root redirects the spatial plot under the job's
+            # summary tree, one directory per unmatched category the event's
+            # neutrinos fall into: <event_plot_root>/<channel>/<category>/
+            # <chunk>/event_<NNN>/. Usually one category; an event whose
+            # neutrinos fail two different ways gets the same plot filed under
+            # each, so browsing either category shows it.
+            categories_present = sorted({r['category'] for r in pop_rows
+                                         if r['category'] != 'matched'})
+            for category in categories_present:
+                if event_plot_root is not None and population['subdir'] is not None:
+                    plot_dir = (Path(event_plot_root) / population['subdir']
+                               / category / file_name / f"event_{event:03d}")
+                else:
+                    plot_dir = pop_dir
+                # Full cluster dicts on purpose: the drawer indexes into
+                # them by the ids on the rows it was given.
+                DrawUnmatchedTrueNeutrinos(clusters_true, pop_rows, event, APA_LABEL, plot_dir,
+                                            file_name=file_name, clusters_reco_all=clusters_reco_all)
+                if spatial_plot_entries is not None:
+                    spatial_plot_entries.append({
+                        'chunk': file_name, 'event': event,
+                        'channel': population['subdir'].name, 'category': category,
+                        'plot_dir': plot_dir,
+                    })
 
     return unmatched_by_population
 
 
-BUILD_BEE_SET = True   # build + upload one BEE set of the unmatched events at job level
+BUILD_BEE_SET = True   # build + upload the unmatched BEE sets at job level
 
 
-def write_unmatched_bee_set(job_rows, volume_map, job_summary_dir):
+def write_unmatched_bee_sets(spatial_plot_entries, in_volume_dir):
     """
-    ONE BEE set holding every event that contributed an unmatched in-volume true
-    neutrino -- the events behind the reasons pie -- so the whole failing
-    population can be opened from a single link instead of hunting per chunk.
+    BEE sets for the in-volume unmatched population, built from
+    spatial_plot_entries (one dict per {chunk, event, channel, category, plot_dir}
+    that render_level_outputs actually drew a spatial plot for) rather than from
+    job_rows directly, so the sets line up exactly with the directory tree those
+    plots were written into: in_volume_neutrinos/<channel>/<category>/<chunk>/
+    event_<NNN>/ -- see the module docstring's BEE SETS section.
 
-    Writes, into job_summary/:
-      unmatched_true_neutrino_bee_events.txt  the selection, one line per
-          neutrino, in the chunk<N>_event<M> form build_bee_set_from_links.py
-          parses. Written ALWAYS -- it is the input the set is built from, and it
-          is useful on its own as the list of events to look at.
-      unmatched_true_neutrino_bee_link.txt    the uploaded set's url and the
-          event map, written only when the upload succeeds.
+    Builds, per CHANNEL (numu_CC / nue_CC / NC):
+      - one BEE set per unmatched CATEGORY under that channel (every event of
+        that channel with that category, in one upload) -> bee_link.txt inside
+        in_volume_neutrinos/<channel>/<category>/
+      - one BEE set of every unmatched event under that channel, any category
+        -> bee_link_all_categories.txt inside in_volume_neutrinos/<channel>/
+    Then, into every event directory in spatial_plot_entries, a bee_link.txt with
+    that one event's url inside its (channel, category) set -- the directory
+    already names the category unambiguously, so this is a single link, not a
+    per-category list.
 
-    The build shells out to build_bee_set_from_links.py and upload-to-bee.sh
-    rather than reimplementing them: those are the same two steps every other
-    population in this repository uses, already handle the renumbering that BEE
-    forces on a combined set, and already refuse to upload an oversized zip.
+    Uses build_bee_set_from_links.build_population_bee_set() (same helper the
+    CosmicTagger notebooks use for their single-population links -- see
+    feedback_single_bee_link_per_population) rather than the old subprocess+regex
+    path, whose chunk(\\d+)_event(\\d+) regex cannot parse this sample's
+    chunk_00__subchunk_00 directory names.
 
-    Set BUILD_BEE_SET = False to write only the selection file -- the upload is a
-    network round trip of a few hundred MB and is the slow part of this step.
+    Set BUILD_BEE_SET = False to skip every upload -- nothing is built and no
+    bee_link.txt files are written anywhere in that case.
     """
-    import subprocess
-
-    job_summary_dir = Path(job_summary_dir)
-    job_summary_dir.mkdir(parents=True, exist_ok=True)
-    selection = job_summary_dir / 'unmatched_true_neutrino_bee_events.txt'
-
-    rows = [r for r in job_rows
-            if r['category'] != 'matched'
-            and volume_map.get((r['event'], r['true_cluster_id'])) == 'in']
-    if not rows:
-        selection.write_text("# no unmatched in-volume true neutrinos\n")
-        return None
-
-    lines = ["# Events behind the unmatched-reasons pie: every event with at least",
-             "# one UNMATCHED in-volume true neutrino. One line per neutrino; the",
-             "# leading token is what build_bee_set_from_links.py parses.",
-             ""]
-    for r in sorted(rows, key=lambda r: (r['event'], r['true_cluster_id'])):
-        chunk, _, evt = r['event'].rpartition('_')
-        lines.append(f"{chunk}_event{evt}_true{r['true_cluster_id']:.0f}.png"
-                     f"   {r['category']}")
-    selection.write_text("\n".join(lines) + "\n")
-    n_events = len({r['event'] for r in rows})
-    print(f"\nUnmatched BEE selection: {len(rows)} neutrino(s) over {n_events} event(s)")
-    print(f"  {selection}")
+    in_volume_dir = Path(in_volume_dir)
+    if not spatial_plot_entries:
+        print("\nNo unmatched in-volume true neutrinos -- no BEE sets built")
+        return
+    print(f"\nUnmatched BEE sets: {len(spatial_plot_entries)} spatial plot(s), by channel/category:")
     if not BUILD_BEE_SET:
-        return None
+        print("  BUILD_BEE_SET is False -- skipping every upload")
+        return
 
-    repo = Path(__file__).resolve().parent
-    out  = job_summary_dir / 'bee_set_unmatched'
-    try:
-        build = subprocess.run(
-            ['python3', str(repo / 'build_bee_set_from_links.py'), str(selection),
-             '--out', str(out)],
-            cwd=str(repo), capture_output=True, text=True, timeout=3600)
-        print(build.stdout.rstrip())
-        zip_path = out.with_suffix('.zip')
-        if build.returncode != 0 or not zip_path.exists():
-            print("  BEE set build failed -- selection file kept, no upload")
-            return None
-        up = subprocess.run(['bash', str(repo / 'upload-to-bee.sh'), str(zip_path)],
-                            cwd=str(repo), capture_output=True, text=True, timeout=7200)
-        url = next((tok for tok in up.stdout.split()
-                    if tok.startswith('https://') and 'event/list' in tok), None)
+    by_channel_category = {}   # (channel, category) -> [entry, ...]
+    by_channel = {}            # channel -> [entry, ...] (categories mixed)
+    for e in spatial_plot_entries:
+        by_channel_category.setdefault((e['channel'], e['category']), []).append(e)
+        by_channel.setdefault(e['channel'], []).append(e)
+
+    def _bee_entries(entries, label):
+        return [{'chunk': e['chunk'], 'event': int(e['event']), 'path': f"{e['chunk']}_event{e['event']}_{label}.png"}
+                for e in entries]
+
+    # One set per (channel, category) -> bee_link.txt in that category's own directory.
+    per_event_by_cc = {}   # (channel, category) -> {(chunk, evt): url}
+    for (channel, category), entries in sorted(by_channel_category.items()):
+        bee_entries = _bee_entries(entries, category)
+        n_events = len({(e['chunk'], e['event']) for e in bee_entries})
+        print(f"  {channel}/{category}: {n_events} event(s) ...", flush=True)
+        cat_dir = in_volume_dir / channel / category
+        url = build_population_bee_set(bee_entries, PARENT_DIR, cat_dir / "bee_set", f"{channel}/{category}")
         if not url:
-            print("  BEE upload returned no url -- see the zip and upload by hand")
-            return None
-    except Exception as exc:
-        print(f"  BEE step skipped: {exc}")
-        return None
+            print("    BEE set build/upload failed -- skipped")
+            continue
+        per_event_by_cc[(channel, category)] = {(e['chunk'], e['event']): e['bee_url'] for e in bee_entries}
+        cat_dir.mkdir(parents=True, exist_ok=True)
+        (cat_dir / 'bee_link.txt').write_text(
+            f"BEE SET URL: {url}\n\n{n_events} unmatched event(s), category '{category}', channel {channel}.\n")
+        print(f"    {url}")
 
-    # The url also goes INTO the set's own event_map.txt, at the top and on every
-    # row. That file is the only thing mapping a BEE event number back to a chunk
-    # and event -- BEE renumbers on upload -- so it is exactly the file a reader
-    # has open while looking at the set, and the least useful place for the link
-    # to be missing. A row's own url means jumping straight to that event instead
-    # of counting down the set listing.
-    map_path = out / 'event_map.txt'
-    if map_path.exists():
-        base = url[:-len('/event/list/')] if url.endswith('/event/list/') else url.rstrip('/')
-        lines = map_path.read_text().splitlines()
-        if not any(l.startswith('BEE SET URL:') for l in lines):
-            for i, l in enumerate(lines):
-                if l.startswith('Built from:'):
-                    lines[i:i] = [f"BEE SET URL: {url}", "",
-                                  "Every row carries the direct url for that event -- open it to go",
-                                  "straight to the event rather than hunting through the set listing.",
-                                  ""]
-                    break
-        out_lines, n_urls = [], 0
-        for l in lines:
-            out_lines.append(l)
-            m = re.match(r'^(\s+)(\d+)(\s+chunk\d+\s+\d+\s+)(\S+)$', l)
-            if m and 'https://' not in l:
-                out_lines.append(f"{' ' * (len(m.group(1)) + len(m.group(2)))}     "
-                                 f"{base}/event/{m.group(2)}/")
-                n_urls += 1
-        map_path.write_text("\n".join(out_lines) + "\n")
-        print(f"  event_map.txt: {n_urls} per-event url(s) added")
+    # One set per channel, every category -> bee_link_all_categories.txt in the channel's directory.
+    for channel, entries in sorted(by_channel.items()):
+        seen, dedup = set(), []
+        for e in entries:
+            key = (e['chunk'], int(e['event']))
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(e)
+        bee_entries = _bee_entries(dedup, "unmatched")
+        print(f"  {channel} (all categories): {len(bee_entries)} event(s) ...", flush=True)
+        chan_dir = in_volume_dir / channel
+        url = build_population_bee_set(bee_entries, PARENT_DIR, chan_dir / "bee_set_all_categories",
+                                       f"{channel} all categories")
+        if not url:
+            print("    BEE set build/upload failed -- skipped")
+            continue
+        chan_dir.mkdir(parents=True, exist_ok=True)
+        (chan_dir / 'bee_link_all_categories.txt').write_text(
+            f"BEE SET URL: {url}\n\n{len(bee_entries)} unmatched event(s), every category, channel {channel}.\n")
+        print(f"    {url}")
 
-    link = job_summary_dir / 'unmatched_true_neutrino_bee_link.txt'
-    body = [f"BEE SET URL: {url}", "",
-            f"{len(rows)} unmatched in-volume true neutrino(s) over {n_events} event(s),",
-            "the population behind unmatched_true_neutrino_pie_reasons_*.png.",
-            "",
-            "Events are RENUMBERED on upload -- see event_map.txt beside the set for",
-            "the mapping back to chunk and original event number.", ""]
-    map_path = out / 'event_map.txt'
-    if map_path.exists():
-        body.append(map_path.read_text())
-    link.write_text("\n".join(body))
-    print(f"  BEE: {url}")
-    print(f"  {link}")
-    return url
+    # Per-event bee_link.txt, inside the directory render_level_outputs already
+    # drew that event's spatial plot into -- one link, from its own (channel,
+    # category) set, since the directory already pins down which category this is.
+    n_written = 0
+    for entry in spatial_plot_entries:
+        key = (entry['channel'], entry['category'])
+        url = per_event_by_cc.get(key, {}).get((entry['chunk'], int(entry['event'])))
+        if not url:
+            continue
+        plot_dir = Path(entry['plot_dir'])
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        (plot_dir / 'bee_link.txt').write_text(f"{entry['category']}: {url}\n")
+        n_written += 1
+    print(f"  bee_link.txt written into {n_written} event directory(ies)")
 
 
 def process_event(input_dir, file_name, evt):
@@ -468,6 +561,27 @@ def process_event(input_dir, file_name, evt):
     true_points = apply_wire_readout_sensitive_yz_plane_cut_true(true_points)
     true_points = apply_deadarea_cut_true_charge_light(true_points, output_dir=None, event=evt, file_name=file_name)
     clusters_true = GroupClustersByID(true_points) if len(true_points) else {}
+
+    # --- IMG-LEVEL true/reco (pre charge-light-matching): sed-sce truth +
+    # img-global reco. Keyed by the same 99990+nu_idx, put through the same
+    # true-side cut chain as clusters_true so a neutrino present in one is
+    # present in the other. metadata.categorize_unmatched_true_neutrinos uses
+    # these to tell a charge-light X-shift failure from a reconstruction gap. ---
+    xi_t, yi_t, zi_t, _idi_t, qi_t, ridi_t, ei_t, nui_t = result['true']
+    img_true_points = build_true_points_charge_light(xi_t, yi_t, zi_t, ridi_t, qi_t,
+                                                     energy=ei_t, nu_idx=nui_t)
+    img_true_points = reassign_cluster_ID_true_charge_light(img_true_points)
+    img_true_points = apply_true_pointwise_energy_cutoff(img_true_points, min_true_point_energy)
+    img_true_points = apply_energy_cutoff(img_true_points, min_cluster_energy)
+    img_true_points = apply_wire_readout_sensitive_yz_plane_cut_true(img_true_points)
+    img_true_points = apply_deadarea_cut_true_charge_light(img_true_points, output_dir=None,
+                                                          event=evt, file_name=file_name)
+    clusters_img_true = GroupClustersByID(img_true_points) if len(img_true_points) else {}
+
+    xi_r, yi_r, zi_r, _idi_r, qi_r, ridi_r = result['reco']
+    img_reco_points = np.column_stack((xi_r, yi_r, zi_r, ridi_r, qi_r))
+    img_reco_points = apply_wire_readout_sensitive_yz_plane_cut_reco(img_reco_points)
+    clusters_img_reco = GroupClustersByID(img_reco_points) if len(img_reco_points) else {}
 
     # --- Reco side: flash association first, so the beam-window cut can be
     # applied as a SELECTION over the full set rather than as a filter that
@@ -562,7 +676,8 @@ def process_event(input_dir, file_name, evt):
         radius_completeness=radius_completeness, min_recopoints_threshold=min_recopoints_threshold,
         tagger_removed_ids=tagger_removed_ids,
         radius_purity_xz=radius_purity_xz, radius_purity_yz=radius_purity_yz,
-        radius_purity_xy=radius_purity_xy)
+        radius_purity_xy=radius_purity_xy,
+        clusters_img_true=clusters_img_true, clusters_img_reco=clusters_img_reco)
 
     # --- Interaction vertices (mc.json), for the in/out-of-volume split ---
     # Same builder and same bounds as the evaluation notebook, so "in volume"
@@ -596,7 +711,10 @@ def process_event(input_dir, file_name, evt):
         # Other reco clusters on the SAME FLASH as the evidence cluster: the rest
         # of the bundled in-beam activity, typically a coincident cosmic.
         row['flash_mate_reco_ids'] = list(flash_mates_by_reco.get(evidence_cid, []))
-        if row.get('category') == 'no_reco_overlap_x_shift':
+        # wrong_charge_light_matching's evidence cluster is the YZ-aligned one
+        # when there is no 3D overlap to point at (drift-shifted off the truth).
+        if (row.get('category') == 'wrong_charge_light_matching'
+                and not row.get('best_strict_reco_cluster_id')):
             yz_cid = row.get('yz_best_reco_cluster_id')
             row['flash_mate_reco_ids'] = list(flash_mates_by_reco.get(yz_cid, []))
 
@@ -604,6 +722,9 @@ def process_event(input_dir, file_name, evt):
 
 
 def main():
+    start_time = time.time()
+    start_stamp = datetime.now()
+
     input_files = find_input_files()
     if not input_files:
         print(f"No input files found in {PARENT_DIR}")
@@ -612,21 +733,21 @@ def main():
     timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = OUTPUT_DIR / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
+    in_volume_dir = output_dir / "in_volume_neutrinos"
 
     job_rows = []
     job_vertex_records = []
     job_selected_reco = 0
     events_processed = 0
     events_with_unmatched = 0
+    # One entry per per-event spatial plot actually drawn (any channel, any
+    # chunk) -- render_level_outputs appends to this in place. Used after the
+    # whole job to write each event's bee_link.txt once the BEE sets exist.
+    spatial_plot_entries = []
 
     for file_name in input_files:
         events = find_events(file_name)
         print(f"{file_name}: {len(events)} event(s) to process", flush=True)
-
-        file_rows = []
-        file_vertex_records = []
-        file_selected_reco = 0
-        file_output_dir = output_dir / file_name
 
         for evt in events:
             processed = process_event(PARENT_DIR / file_name, file_name, evt)
@@ -634,11 +755,8 @@ def main():
                 continue
             clusters_true, clusters_reco, clusters_reco_all, neutrino_rows, vertex_records = processed
 
-            file_rows.extend(neutrino_rows)
             job_rows.extend(neutrino_rows)
-            file_vertex_records.extend(vertex_records)
             job_vertex_records.extend(vertex_records)
-            file_selected_reco += len(clusters_reco)
             job_selected_reco  += len(clusters_reco)
             events_processed += 1
 
@@ -654,30 +772,29 @@ def main():
             if n_unmatched > 0:
                 events_with_unmatched += 1
 
+            # spatial_only: no per-event/per-file directory tree of its own any
+            # more (see the module docstring) -- this call exists only to find
+            # which events have an unmatched neutrino and draw its spatial plot,
+            # under in_volume_dir, via event_plot_root.
             render_level_outputs(
                 neutrino_rows, event_volume_map, build_neutrino_channel_map(vertex_records),
                 len(clusters_reco),
-                file_output_dir / f"event_{evt:03d}", "Event Level", file_name,
+                None, "Event Level", file_name,
                 file_name=file_name,
                 clusters_true=clusters_true, clusters_reco_all=clusters_reco_all, event=evt,
-                draw=b_draw_event_level_plots)
-
-        if file_rows or file_selected_reco:
-            render_level_outputs(
-                file_rows, build_neutrino_volume_map(file_vertex_records),
-                build_neutrino_channel_map(file_vertex_records), file_selected_reco,
-                file_output_dir / "file_summary", "File Level", file_name, file_name=file_name)
+                draw=b_draw_event_level_plots, spatial_only=True,
+                event_plot_root=in_volume_dir, spatial_plot_entries=spatial_plot_entries)
 
     if job_rows or job_selected_reco:
         job_volume_map = build_neutrino_volume_map(job_vertex_records)
         render_level_outputs(job_rows, job_volume_map, build_neutrino_channel_map(job_vertex_records),
-                             job_selected_reco, output_dir / "job_summary", "Job Level", "alljobs")
-        write_unmatched_bee_set(job_rows, job_volume_map, output_dir / "job_summary")
+                             job_selected_reco, in_volume_dir, "Job Level", "alljobs")
+        write_unmatched_bee_sets(spatial_plot_entries, in_volume_dir)
 
-    categories = ['matched', 'reco_outside_beam_window', 'reco_no_flash_match', 'broken_or_sparse_reco',
-                  'no_reco_overlap_x_shift', 'no_reco_overlap', 'unexplained']
+    categories = ['matched', 'wrong_charge_light_matching', 'reco_outside_beam_window',
+                  'broken_or_sparse_reco', 'no_reco_overlap', 'unexplained']
     if APPLY_COSMIC_TAGGER_CUT:
-        categories.insert(1, 'removed_by_cosmic_tagger')
+        categories.insert(2, 'removed_by_cosmic_tagger')
     job_volume_map  = build_neutrino_volume_map(job_vertex_records)
     job_channel_map = build_neutrino_channel_map(job_vertex_records)
     rows_by_population = {p['key']: population_rows(job_rows, p, job_volume_map, job_channel_map)
@@ -699,32 +816,34 @@ def main():
         print(f"  {cat + ':':<24}"
               + "".join(f"{sum(1 for r in rows_by_population[key] if r['category'] == cat):>30}"
                         for key, _ in columns))
-    # Every categorised true neutrino as one CSV row, so the population can be
-    # re-cut afterwards without re-running the job -- by energy band, by channel,
-    # by whatever the question turns out to need. The printed tables above are a
-    # fixed set of splits; this is the data behind them.
-    import csv
-    csv_path = Path(output_dir) / 'true_neutrino_categories.csv'
-    fields = ['event', 'event_num', 'true_cluster_id', 'category', 'volume', 'channel',
-              'total_true_energy', 'n_true_points', 'completeness',
-              'matched_reco_cluster_id', 'best_relaxed_overlap',
-              'n_overlapping_reco_clusters', 'n_overlapping_in_beam_window',
-              'winner_flash_time', 'winner_flash_offset_us',
-              'min_dist', 'dx', 'dy', 'dz', 'linearity']
-    with open(csv_path, 'w', newline='') as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields, extrasaction='ignore')
-        writer.writeheader()
-        for row in job_rows:
-            key = (row.get('event'), row.get('true_cluster_id'))
-            writer.writerow({**row,
-                             'volume': job_volume_map.get(key),
-                             'channel': job_channel_map.get(key)})
-    print(f"\nPer-neutrino rows: {csv_path}  ({len(job_rows)} row(s))")
-
     print(f"\nOutput written to: {output_dir}")
     for population in POPULATIONS:
-        where = "<level>/" if population['subdir'] is None else f"<level>/{population['subdir']}/"
+        where = "in_volume_neutrinos/" if population['subdir'] is None \
+            else f"in_volume_neutrinos/{population['subdir']}/"
         print(f"  {(population['label'] or 'all true neutrinos'):<28}: {where}")
+
+    # How long the job took, for the overnight/multi-chunk runs where that isn't
+    # otherwise visible anywhere -- see feedback_periodic_job_status.
+    end_stamp = datetime.now()
+    elapsed_s = time.time() - start_time
+    hours, rem = divmod(int(elapsed_s), 3600)
+    minutes, seconds = divmod(rem, 60)
+    duration = (f"{hours}h {minutes}m {seconds}s" if hours
+                else f"{minutes}m {seconds}s")
+    summary_lines = [
+        f"Started:  {start_stamp:%Y-%m-%d %H:%M:%S}",
+        f"Finished: {end_stamp:%Y-%m-%d %H:%M:%S}",
+        f"Duration: {duration}  ({elapsed_s:.1f} s)",
+        "",
+        f"Input file(s): {len(input_files)}  ({', '.join(input_files) if len(input_files) <= 10 else input_files[0] + ' ... ' + input_files[-1]})",
+        f"Events processed: {events_processed}",
+        f"Events with >=1 unmatched true neutrino: {events_with_unmatched}",
+        f"Total true neutrino clusters: {len(job_rows)}",
+        f"Total selected reco clusters (beam window, post cuts): {job_selected_reco}",
+    ]
+    (output_dir / 'summary.txt').write_text("\n".join(summary_lines) + "\n")
+    print(f"\nJob duration: {duration}")
+    print(f"  {output_dir / 'summary.txt'}")
 
 
 if __name__ == "__main__":

@@ -2121,62 +2121,54 @@ def DrawExtraRecoCategoryBreakdown(categorized_rows, n_true_neutrinos, output_di
 # suggesting a relationship that isn't there -- except 'matched', which reuses
 # the same green as 'matched_winner' because it is the same set of pairs seen
 # from the other side.
-_UNMATCHED_TRUE_NU_CATEGORY_ORDER = ['matched', 'removed_by_cosmic_tagger',
-                                      'reco_outside_beam_window', 'reco_no_flash_match',
-                                      'broken_or_sparse_reco', 'no_reco_overlap_x_shift',
+_UNMATCHED_TRUE_NU_CATEGORY_ORDER = ['matched', 'wrong_charge_light_matching',
+                                      'removed_by_cosmic_tagger', 'reco_outside_beam_window',
+                                      'broken_or_sparse_reco',
                                       'no_reco_overlap', 'unexplained']
 _UNMATCHED_TRUE_NU_CATEGORY_COLORS = {
     'matched':                  'green',
+    # The charge-light X-shift family: teal, the more specific diagnosis.
+    'wrong_charge_light_matching': '#0d7c8c',
     # The cosmic tagger removal is a SELECTION decision, not a reconstruction
-    # failure like the rest -- brown keeps it visually apart from the red/purple
-    # beam-window family it sits next to in the order.
+    # failure like the rest -- brown keeps it visually apart.
     'removed_by_cosmic_tagger': '#8c564b',
     'reco_outside_beam_window': '#d62728',
-    'reco_no_flash_match':      '#9467bd',
     'broken_or_sparse_reco':    '#ff7f0e',
-    # Both no_reco_overlap variants share a hue family (they are the same
-    # observation, split by whether YZ still lines up), with the charge-light
-    # one darker so it reads as the more specific diagnosis of the pair.
-    'no_reco_overlap_x_shift':  '#0d7c8c',
     'no_reco_overlap':          '#17becf',
     'unexplained':              '#7f7f7f',
 }
 _UNMATCHED_TRUE_NU_CATEGORY_LABELS = {
     'matched':                  'Matched',
+    'wrong_charge_light_matching': 'Wrong charge-light\nmatching (X shift)',
     'removed_by_cosmic_tagger': 'Removed by\ncosmic tagger',
     'reco_outside_beam_window': 'Reco outside\nbeam window',
-    'reco_no_flash_match':      'Reco has\nno flash',
     'broken_or_sparse_reco':    'Broken /\nsparse reco',
-    'no_reco_overlap_x_shift':  'No 3D overlap,\nYZ aligns (X shift)',
     'no_reco_overlap':          'No reco\noverlap',
     'unexplained':              'Unexplained',
 }
 
 
 # Categories where one specific reco cluster is the evidence for the diagnosis,
-# and the row field holding its ID. For these, and only these, that single reco
-# cluster is drawn in gray alongside the true cluster (see
-# DrawUnmatchedTrueNeutrinos):
-#   - the two beam-window losses: the cluster that WOULD have matched, which the
-#     cut removed -- without it the plot cannot separate "cut on timing" from
-#     "never reconstructed"
-#   - no_reco_overlap_x_shift: the cluster that lines up in YZ but not in 3D.
-#     Drawing it IS the argument -- it sits on the neutrino in the YZ panel and
-#     visibly apart from it in XZ/XY, which is what a drift-only displacement
-#     looks like.
-# The rest have no such cluster: broken_or_sparse_reco has no single cluster that
-# would have matched, and plain no_reco_overlap has nothing nearby in any view.
+# and the row field(s) holding its ID (tried in order). For these, and only
+# these, that single reco cluster is drawn in gray alongside the true cluster
+# (see DrawUnmatchedTrueNeutrinos):
+#   - reco_outside_beam_window / removed_by_cosmic_tagger: the cluster that
+#     WOULD have matched, which the cut removed -- without it the plot cannot
+#     separate "cut on timing" from "never reconstructed"
+#   - wrong_charge_light_matching: the drift-shifted cluster -- the one with a
+#     3D overlap if charge-light only degraded it, else the YZ-aligned one.
+#     Drawing it IS the argument: it sits on the neutrino in the YZ panel and
+#     visibly apart from it in XZ/XY, which is what a drift-only shift looks like.
+# The rest have no such cluster.
 _EVIDENCE_RECO_ID_FIELD = {
-    'removed_by_cosmic_tagger': 'best_strict_reco_cluster_id',
-    'reco_outside_beam_window': 'best_strict_reco_cluster_id',
-    'reco_no_flash_match':      'best_strict_reco_cluster_id',
-    'no_reco_overlap_x_shift':  'yz_best_reco_cluster_id',
+    'removed_by_cosmic_tagger':     ('best_strict_reco_cluster_id',),
+    'reco_outside_beam_window':     ('best_strict_reco_cluster_id',),
+    'wrong_charge_light_matching':  ('best_strict_reco_cluster_id', 'yz_best_reco_cluster_id'),
 }
 _EVIDENCE_RECO_LABEL = {
-    'removed_by_cosmic_tagger': 'tagger removed',
-    'reco_outside_beam_window': 'would have matched',
-    'reco_no_flash_match':      'would have matched',
-    'no_reco_overlap_x_shift':  'YZ-aligned with',
+    'removed_by_cosmic_tagger':     'tagger removed',
+    'reco_outside_beam_window':     'would have matched',
+    'wrong_charge_light_matching':  'drift-shifted reco of',
 }
 
 
@@ -2335,10 +2327,11 @@ def DrawUnmatchedTrueNeutrinos(clusters_true, neutrino_rows, event, apa, output_
     evidence_reco = {}
     if clusters_reco_all:
         for r in neutrino_rows:
-            id_field = _EVIDENCE_RECO_ID_FIELD.get(r['category'])
-            if id_field is None:
+            id_fields = _EVIDENCE_RECO_ID_FIELD.get(r['category'])
+            if id_fields is None:
                 continue
-            reco_cid = r.get(id_field)
+            reco_cid = next((r.get(f) for f in id_fields
+                             if r.get(f) is not None and r.get(f) in clusters_reco_all), None)
             if reco_cid not in clusters_reco_all:
                 continue
             # How good the pairing WOULD have been. completeness is the row's
@@ -2363,7 +2356,14 @@ def DrawUnmatchedTrueNeutrinos(clusters_true, neutrino_rows, event, apa, output_
                 bits.append(f"completeness {compl:.3f}")
             if purity is not None:
                 bits.append(f"purity {purity:.3f}")
-            if r['category'] == 'reco_outside_beam_window':
+            img_compl = r.get('img_best_completeness')
+            if r['category'] == 'wrong_charge_light_matching' and img_compl:
+                bits.append(f"img completeness {img_compl:.3f}")
+            if r['category'] == 'wrong_charge_light_matching':
+                reason = r.get('charge_light_reason')
+                if reason:
+                    bits.append(reason.upper())
+            if r['category'] in ('reco_outside_beam_window', 'wrong_charge_light_matching'):
                 t = r.get('winner_flash_time')
                 off = r.get('winner_flash_offset_us')
                 if t is not None:
@@ -2371,8 +2371,6 @@ def DrawUnmatchedTrueNeutrinos(clusters_true, neutrino_rows, event, apa, output_
                     if off is not None:
                         line += f" ({abs(off):.2f} us outside window)"
                     bits.append(line)
-            elif r['category'] == 'reco_no_flash_match':
-                bits.append("no flash bridged onto this cluster")
             note = "\n    ".join(bits) if bits else None
             evidence_reco.setdefault(reco_cid, (r['true_cluster_id'],
                                                 _EVIDENCE_RECO_LABEL[r['category']], note))
@@ -2415,12 +2413,21 @@ def DrawUnmatchedTrueNeutrinos(clusters_true, neutrino_rows, event, apa, output_
     banner = format_true_neutrino_banner(neutrino_rows, cluster_ids=unmatched_category.keys(),
                                           id_key='true_cluster_id')
 
+    # The unmatched category(ies) behind this event's flagged neutrinos, for the
+    # panel titles -- usually one, but two true neutrinos in the same event can
+    # fail for different reasons, so this is every distinct one, not just the
+    # first. Per-cluster category still lives in the legend; this is the
+    # at-a-glance answer to "why is this plot here".
+    category_text = ", ".join(sorted({
+        _UNMATCHED_TRUE_NU_CATEGORY_LABELS[c].replace('\n', ' ')
+        for c in unmatched_category.values()}))
+
     for col_idx, (view_label, x_col, y_col, xlim, ylim, xlabel, ylabel) in enumerate(views):
         # ---- top row: the flagged TRUE neutrinos ----
         ax = axes[0][col_idx]
         ax.set_xlim(xlim); ax.set_ylim(ylim)
         ax.set_xlabel(xlabel); ax.set_ylabel(ylabel)
-        title = f"TRUE -- unmatched neutrinos: Event {event}, {apa}, {view_label}"
+        title = f"TRUE -- unmatched neutrinos ({category_text}): Event {event}, {apa}, {view_label}"
         if file_name:
             title += f" ({file_name})"
         ax.set_title(title, fontsize=11, wrap=True)
@@ -2450,7 +2457,7 @@ def DrawUnmatchedTrueNeutrinos(clusters_true, neutrino_rows, event, apa, output_
         ax = axes[1][col_idx]
         ax.set_xlim(xlim); ax.set_ylim(ylim)
         ax.set_xlabel(xlabel); ax.set_ylabel(ylabel)
-        title = f"RECO -- removed by the selection: Event {event}, {apa}, {view_label}"
+        title = f"RECO -- removed by the selection ({category_text}): Event {event}, {apa}, {view_label}"
         if file_name:
             title += f" ({file_name})"
         ax.set_title(title, fontsize=11, wrap=True)
@@ -2596,17 +2603,14 @@ def DrawUnmatchedTrueNeutrinoBreakdown(neutrino_rows, n_selected_reco, output_di
 # other than the reconstruction lost it". Counted as recoverable signal in the
 # second efficiency curve.
 #
-# no_reco_overlap_x_shift is in the list even though its 3D completeness and
-# purity are ~0. That is the point of the category: the cluster lines up with the
-# neutrino in YZ and misses in 3D, which can only happen along the drift
-# direction, which charge-light matching sets from the flash time. So the charge
-# WAS reconstructed and was merely placed at the wrong X -- give it the right
-# flash and it would match. Excluding it would blame the reconstruction for a
-# flash-assignment failure.
-WOULD_HAVE_MATCHED_CATEGORIES = ('removed_by_cosmic_tagger',
-                                 'reco_outside_beam_window',
-                                 'reco_no_flash_match',
-                                 'no_reco_overlap_x_shift')
+# wrong_charge_light_matching is in the list even where its clustering-level 3D
+# completeness and purity are ~0: the img-level cross-check has already shown the
+# neutrino WAS imaged, and charge-light matching's flash assignment is what put
+# the reco cluster at the wrong X. Give it the right flash and it would match --
+# excluding it would blame the reconstruction for a flash-assignment failure.
+WOULD_HAVE_MATCHED_CATEGORIES = ('wrong_charge_light_matching',
+                                 'removed_by_cosmic_tagger',
+                                 'reco_outside_beam_window')
 
 _EFFICIENCY_BIN_WIDTH_MEV = 200
 _EFFICIENCY_MAX_MEV       = 3000

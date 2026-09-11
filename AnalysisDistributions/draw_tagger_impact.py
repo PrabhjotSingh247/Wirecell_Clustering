@@ -274,7 +274,7 @@ def _relative_path(entry):
 
 
 def write_bee_links_by_category(entries, output_root, dir_name,
-                                prefix='bee_links'):
+                                prefix='bee_links', bee_set_url=None):
     """
     One BEE link file per interaction channel, written one directory ABOVE the
     chunk directories so a channel can be worked through on its own.
@@ -282,6 +282,10 @@ def write_bee_links_by_category(entries, output_root, dir_name,
     A channel with no entries still gets a file, saying so -- an absent file and
     an empty population look the same otherwise, and only one of them means the
     job did what was asked.
+
+    bee_set_url, when given, is the ONE BEE set holding every event of this
+    population (build_bee_set_from_links.build_population_bee_set); it is written
+    at the top of every channel file, and the per-row urls are events within it.
 
     Returns {channel: path}.
     """
@@ -294,8 +298,10 @@ def write_bee_links_by_category(entries, output_root, dir_name,
         rows.sort(key=lambda e: (str(e['chunk']), int(e['event'] or 0)))
         lines = [f"# BEE event display -- {channel}",
                  "# One line per figure. The same URL is printed on the figure itself,",
-                 "# where it cannot be clicked: PNG has no hyperlinks.",
-                 ""]
+                 "# where it cannot be clicked: PNG has no hyperlinks."]
+        if bee_set_url:
+            lines.append(f"# BEE SET (all channels of this population, one upload): {bee_set_url}")
+        lines.append("")
         if not rows:
             lines.append(f"# (no {channel} interactions in this population)")
         for entry in rows:

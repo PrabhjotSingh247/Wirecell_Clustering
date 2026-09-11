@@ -38,12 +38,10 @@ DIRECTORY LAYOUT
             completeness_purity.txt
         two_neutrino_in_beam/
             two_neutrino_chunk0_21.png
-        unselected_nue_CC/
-            unselected_nue_chunk0_9.png
 
 Saved_Clusters holds the completeness-purity grid and nothing else: one directory
 per (cell, event), with that event's pair view for every channel that landed in
-the cell.  The two per-event sets are not cells of that grid, so they sit beside
+the cell.  The two-neutrino set is not a cell of that grid, so it sits beside
 it rather than inside it, directly under job_summary.  The index goes next to the
 scatter plot it explains, and lists all of them with paths written relative to
 itself. In practice that is ONE file per directory: a cell is
@@ -110,12 +108,6 @@ SAVED_TWO_NEUTRINO_VIEWS = 5
 # it to get a different draw from the same job.
 VIEW_SAMPLE_SEED = 12345
 
-# Every in-volume nue CC interaction that produced NO selected reco cluster.
-# There are only a handful of nue CC in the whole sample, so losing one matters
-# and each deserves a picture and a line in the index. Written under the job
-# summary (job_root): these are LOSSES rather than pairs, so they have no cell in
-# the grid, and they are drawn whether or not the grid is.
-UNSELECTED_NUE_DIR_NAME = 'unselected_nue_CC'
 _ZOOM_MARGIN = 0.15       # padding around the drawn points, as a fraction of span
 
 _TRUE_STYLE = dict(color='tab:red',  marker='.', s=8,  alpha=0.55, label='true cluster')
@@ -247,8 +239,6 @@ class ClusterViewSampler:
         self.max_two_neutrino = max_two_neutrino
         self.two_neutrino_slots = []
         self.n_two_neutrino_candidates = 0
-        # No quota: every unselected nue CC is drawn.
-        self.n_unselected_nue = 0
         self._rng = np.random.default_rng(seed)
         # What was actually saved, for the index file. Metadata only -- no point
         # clouds -- so this stays small however many views are drawn.
@@ -334,23 +324,10 @@ class ClusterViewSampler:
             self.two_neutrino_slots.append(entry)
         self.saved.append(entry)
 
-    def take_unselected_nue(self, vertex, path, event_label, true_energy, detail):
-        self.n_unselected_nue += 1
-        self.saved.append({
-            'kind': 'unselected_nue', 'channel': 'nue_CC',
-            'completeness_bin': None, 'purity_bin': None, 'event': event_label,
-            'completeness': None, 'purity': None,
-            'true_cluster_id': vertex.get('cluster_id'),
-            'true_energy_mev': true_energy,
-            'reco_cluster_id': None, 'reco_energy_mev': None,
-            'category': 'unselected_nue', 'detail': detail,
-            'path': str(path) if path else None})
-
     def summary(self):
         return (f"{self.n_pairs} pair view(s), "
                 f"{self.n_two_neutrino} two-neutrino view(s) "
-                f"from {self.n_two_neutrino_candidates} candidate(s), "
-                f"{self.n_unselected_nue} unselected nue CC view(s)")
+                f"from {self.n_two_neutrino_candidates} candidate(s)")
 
 
 def _draw_panels(fig_title, point_sets, output_path, legend_lines, footer_note=None):
@@ -614,52 +591,29 @@ def draw_two_neutrino_views(by_true, clusters_true, clusters_reco, output_root, 
 def save_event_cluster_views(categorized_records, clusters_true, clusters_reco,
                              sampler, output_root, event_label,
                              first_neutrino_only=True,
-                             vertex_records=None, job_root=None,
+                             job_root=None,
                              draw_pair_cells=True, draw_two_neutrino=True):
     """
     Draw whatever this event contributes to the sample: pairs for cells not yet
-    filled, two-neutrino events offered to the reservoir, and any unselected nue
-    CC interaction. Returns the number of figures drawn (which counts a
-    two-neutrino view that is later evicted and deleted).
+    filled and two-neutrino events offered to the reservoir. Returns the number of
+    figures drawn (which counts a two-neutrino view that is later evicted and
+    deleted).
 
     first_neutrino_only restricts pair views to the event's FIRST neutrino -- see
     FIRST_NEUTRINO_CLUSTER_ID.
 
     output_root takes the grid cells and nothing else; job_root takes
-    TWO_NEUTRINO_DIR_NAME and UNSELECTED_NUE_DIR_NAME -- see DIRECTORY LAYOUT. It
-    defaults to output_root, so a caller that does not care still gets one
-    self-contained tree.
+    TWO_NEUTRINO_DIR_NAME -- see DIRECTORY LAYOUT. It defaults to output_root, so a
+    caller that does not care still gets one self-contained tree.
 
     draw_pair_cells=False suppresses the grid cells, so output_root is never
     created; draw_two_neutrino=False does the same for TWO_NEUTRINO_DIR_NAME. Both
     exist because these views describe the INPUT SAMPLE rather than the code under
     study, so a job re-run on the same sample would only redraw what an earlier one
-    already has. The unselected nue CC views are covered by neither flag and are
-    always drawn.
+    already has.
     """
     drawn = 0
     job_root = Path(job_root) if job_root is not None else Path(output_root)
-
-    # Unselected nue CC: decided per INTERACTION, so it needs the vertex records
-    # rather than the reco-side categorisation.
-    selected = [r for r in categorized_records or []
-                if r['category'] == 'contaminated' or r['category'].startswith('high_signal_')]
-    paired_true = {r['pair_true_cluster_id'] for r in selected}
-    for vertex in vertex_records or []:
-        if (vertex.get('interaction_channel') != 'nue_CC'
-                or vertex.get('vertex_in_volume') is not True
-                or vertex.get('cluster_id') in paired_true):
-            continue
-        path = draw_unselected_nue_views(vertex, clusters_true, clusters_reco, selected,
-                                         job_root, event_label)
-        if path:
-            true_points = clusters_true.get(vertex.get('cluster_id'))
-            sampler.take_unselected_nue(
-                vertex, path, event_label,
-                float(np.asarray(true_points)[:, 5].sum()) if true_points is not None else None,
-                {'precut_energy_MeV': vertex.get('precut_energy_MeV'),
-                 'n_selected_in_event': len(selected)})
-            drawn += 1
 
     # Two-neutrino events first: the decision is per EVENT, not per cluster, so it
     # does not belong in the per-record loop below.
@@ -753,8 +707,6 @@ def write_cluster_view_index(sampler, output_root, filename='completeness_purity
     path = index_root / filename
     two_nu_dir = _relative_dir(job_root if job_root is not None else output_root,
                                index_root, TWO_NEUTRINO_DIR_NAME)
-    nue_dir = _relative_dir(job_root if job_root is not None else output_root,
-                            index_root, UNSELECTED_NUE_DIR_NAME)
     # The grid cells are named relative to the index too, so a pair row can be
     # followed from wherever the index sits. Empty when the index is inside
     # output_root, which is what the cell names alone already mean.
@@ -763,7 +715,6 @@ def write_cluster_view_index(sampler, output_root, filename='completeness_purity
 
     pairs   = [s for s in sampler.saved if s['kind'] == 'pair']
     two_nu  = [s for s in sampler.saved if s['kind'] == 'two_neutrino']
-    lost_nue = [s for s in sampler.saved if s['kind'] == 'unselected_nue']
 
     lines = []
     lines.append("=" * 108)
@@ -797,8 +748,7 @@ def write_cluster_view_index(sampler, output_root, filename='completeness_purity
         lines.append("which is the case a flash-based grouping cannot separate.")
         lines.append("")
         lines.append("")
-    lines.append(f"{len(pairs)} pair view(s), {len(two_nu)} two-neutrino view(s), "
-                 f"{len(lost_nue)} unselected nue CC view(s).")
+    lines.append(f"{len(pairs)} pair view(s), {len(two_nu)} two-neutrino view(s).")
     lines.append("")
     if pairs:
         lines.append("-" * 108)
@@ -814,24 +764,6 @@ def write_cluster_view_index(sampler, output_root, filename='completeness_purity
             f"{(entry.get('true_energy_mev') or 0):>9.0f}{entry['reco_energy_mev']:>9.0f}"
             f"{entry['true_cluster_id']:>10.0f}{entry['reco_cluster_id']:>11.3f}"
             f"  {cell_prefix}{cell_directory_name(entry['completeness'], entry['purity'])}/{name}")
-
-    if lost_nue:
-        lines.append("")
-        lines.append("=" * 108)
-        lines.append("UNSELECTED nue CC INTERACTIONS -- every in-volume nue CC that produced NO")
-        lines.append(f"selected reco cluster. Views in {nue_dir}")
-        lines.append("=" * 108)
-        lines.append(f"  {'event':>12s}{'true id':>10s}{'true E':>9s}{'pre-cut E':>11s}"
-                     f"{'selected in event':>19s}  file")
-        lines.append("-" * 108)
-        for entry in lost_nue:
-            d = entry.get('detail') or {}
-            name = Path(entry['path']).name if entry['path'] else ''
-            lines.append(f"  {entry['event']:>12s}{(entry['true_cluster_id'] or 0):>10.0f}"
-                         f"{(entry.get('true_energy_mev') or 0):>9.0f}"
-                         f"{(d.get('precut_energy_MeV') or 0):>11.0f}"
-                         f"{d.get('n_selected_in_event', 0):>19d}"
-                         f"  {nue_dir}{name}")
 
     if two_nu:
         lines.append("")

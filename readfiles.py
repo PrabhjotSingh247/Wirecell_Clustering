@@ -165,9 +165,12 @@ def ensure_data_extracted(input_dir):
 # This production ships ONE event per zip: bee_r<run>_s<subrun>_e<event>.zip,
 # contents at data/0/0-*.json. The "0" after data/ is NOT the event number --
 # every zip uses it -- and the real (run, subrun, event) is in the file name (and
-# redundantly in each JSON's runNo/subRunNo/eventNo). stage_nuecc_chunks() below
-# rewrites a slice of these zips into the chunk<N>/data/<k>/ tree the
-# charge-light notebooks already loop over, so nothing downstream changes.
+# redundantly in each JSON's runNo/subRunNo/eventNo). The 8866 zips are grouped
+# into bee/chunk_00 .. chunk_88 (randomly, see bee/chunk_manifest.txt), each
+# further split into subchunk_00 .. of 10 zips; one job runs one chunk_NN.
+# stage_nuecc_chunks() below rewrites a chunk's subchunks into the
+# <name>/data/<k>/ tree the charge-light notebooks already loop over, so nothing
+# downstream changes.
 
 NUECC_ZIP_RE = re.compile(r'^bee_r(\d+)_s(\d+)_e(\d+)\.zip$')
 
@@ -184,77 +187,103 @@ def parse_nuecc_zip_name(name):
     return tuple(int(group) for group in match.groups())
 
 
+def _stage_nuecc_group(group_zips, out_dir, tmp_root):
+    """
+    Extract one group of (parsed, zip_path) into out_dir/data/<k>/<k>-*.json for
+    k = 0.. and write out_dir/event_map.txt (k -> run, subrun, event, zip name).
+
+    Idempotent: a data/<k>/ that already holds files is left alone. tmp_root must
+    be on the same filesystem as out_dir so the extracted payload is MOVED, not
+    copied across devices.
+    """
+    (out_dir / "data").mkdir(parents=True, exist_ok=True)
+    map_lines = []
+    for k, ((run, subrun, event), zip_path) in enumerate(group_zips):
+        map_lines.append(f"{k}\t{run}\t{subrun}\t{event}\t{zip_path.name}")
+        event_dir = out_dir / "data" / str(k)
+        if event_dir.is_dir() and any(event_dir.iterdir()):
+            continue
+        event_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=tmp_root) as tmp_name:
+            tmp = Path(tmp_name)
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(tmp)
+            src = tmp / "data" / "0"
+            if not src.is_dir():
+                print(f"Warning: {zip_path.name} has no data/0/; skipping.")
+                continue
+            for payload in sorted(src.iterdir()):
+                if not payload.is_file():
+                    continue
+                dest_name = (f"{k}-{payload.name[2:]}"
+                             if payload.name.startswith("0-") else payload.name)
+                payload.rename(event_dir / dest_name)
+        print(f"Staged {zip_path.name} -> {event_dir}")
+    (out_dir / "event_map.txt").write_text(
+        "# k\trun\tsubrun\tevent\tzip\n" + "\n".join(map_lines) + "\n")
+
+
+def _sorted_zips_in(directory):
+    """[(run, subrun, event), zip_path] for every bee_*.zip in directory, sorted."""
+    zips = []
+    for entry in Path(directory).iterdir():
+        parsed = parse_nuecc_zip_name(entry.name)
+        if parsed is not None:
+            zips.append((parsed, entry))
+    zips.sort(key=lambda item: item[0])
+    return zips
+
+
 def stage_nuecc_chunks(bee_dir, staging_root, n_files=100, chunk_size=10):
     """
-    Lay the one-event-per-zip nuecc sample out as the chunk<N>/data/<k>/ tree the
-    charge-light notebooks already loop over.
+    Lay the one-event-per-zip nuecc sample out as the <name>/data/<k>/ tree the
+    charge-light notebooks already loop over -- one staged directory per group of
+    up to chunk_size events, each with an event_map.txt (k -> run, subrun, event,
+    zip name; the renumber to 0..k-1 drops the real identity from the tree).
 
-    bee_dir holds bee_r<run>_s<subrun>_e<event>.zip, one event each, contents at
-    data/0/0-*.json. The first n_files zips -- ordered by (run, subrun, event), so
-    chunk membership is reproducible -- are split into groups of chunk_size;
-    group i becomes
+    bee_dir is normally one bee/chunk_NN/ source group. TWO layouts are handled:
 
-        staging_root/chunk<i:02d>/data/<k>/<k>-*.json     for k in 0..chunk_size-1
+    * chunk_NN/subchunk_MM/*.zip  -- the on-disc grouping. The first
+      ceil(n_files / chunk_size) subchunks (by name) are each staged into
+      staging_root/<chunk_NN>__<subchunk_MM>/data/<k>/. The staged name carries
+      the SOURCE CHUNK so several chunks can be staged into one staging_root
+      without colliding (a job over NUECC_SOURCE_CHUNKS does exactly that).
+      chunk_size should match the subchunk size (10); it only decides how many
+      subchunks n_files reaches.
 
-    Each zip's data/0/0-*.json is moved to data/<k>/ and its files renamed
-    0-* -> <k>-*, which is exactly the shape detect_events_in_directory and
-    read_charge_light_files_for_event expect. Renumbering to 0..k-1 drops the real
-    identity from the tree, so each chunk also gets an event_map.txt recording
-    k -> (run, subrun, event, zip name).
+    * chunk_NN/*.zip (flat, no subchunk dirs) -- the first n_files zips, ordered
+      by (run, subrun, event), split into groups of chunk_size, staged into
+      staging_root/chunk<i:02d>/data/<k>/.
 
-    Idempotent: a data/<k>/ that already holds files is left alone, so re-running
-    a notebook never re-extracts. Returns the sorted list of chunk directories.
+    Each zip's data/0/0-*.json is moved to data/<k>/ and renamed 0-* -> <k>-*,
+    the shape detect_events_in_directory / read_charge_light_files_for_event
+    expect. Idempotent: a populated data/<k>/ is left alone. Returns the sorted
+    list of staged directories.
     """
     bee_dir = Path(bee_dir)
     staging_root = Path(staging_root)
     staging_root.mkdir(parents=True, exist_ok=True)
 
-    zips = []
-    for entry in bee_dir.iterdir():
-        parsed = parse_nuecc_zip_name(entry.name)
-        if parsed is not None:
-            zips.append((parsed, entry))
-    zips.sort(key=lambda item: item[0])
-    zips = zips[:n_files]
+    subchunks = sorted(d for d in bee_dir.iterdir()
+                       if d.is_dir() and d.name.startswith("subchunk_"))
+    staged_dirs = []
 
-    n_chunks = (len(zips) + chunk_size - 1) // chunk_size
-    chunk_dirs = []
-    for chunk_idx in range(n_chunks):
-        chunk_zips = zips[chunk_idx * chunk_size:(chunk_idx + 1) * chunk_size]
-        chunk_dir = staging_root / f"chunk{chunk_idx:02d}"
-        (chunk_dir / "data").mkdir(parents=True, exist_ok=True)
-        chunk_dirs.append(chunk_dir)
+    if subchunks:
+        n_wanted = max(1, -(-n_files // chunk_size))   # ceil
+        for sub_dir in subchunks[:n_wanted]:
+            out_dir = staging_root / f"{bee_dir.name}__{sub_dir.name}"
+            staged_dirs.append(out_dir)
+            _stage_nuecc_group(_sorted_zips_in(sub_dir), out_dir, staging_root)
+        return staged_dirs
 
-        map_lines = []
-        for k, ((run, subrun, event), zip_path) in enumerate(chunk_zips):
-            map_lines.append(f"{k}\t{run}\t{subrun}\t{event}\t{zip_path.name}")
-            event_dir = chunk_dir / "data" / str(k)
-            if event_dir.is_dir() and any(event_dir.iterdir()):
-                continue
-            event_dir.mkdir(parents=True, exist_ok=True)
-            # Extract to a sibling temp dir (same filesystem, so the renames
-            # below are moves, not cross-device copies), then move + rename the
-            # data/0 payload into place.
-            with tempfile.TemporaryDirectory(dir=staging_root) as tmp_name:
-                tmp = Path(tmp_name)
-                with zipfile.ZipFile(zip_path, 'r') as zf:
-                    zf.extractall(tmp)
-                src = tmp / "data" / "0"
-                if not src.is_dir():
-                    print(f"Warning: {zip_path.name} has no data/0/; skipping.")
-                    continue
-                for payload in sorted(src.iterdir()):
-                    if not payload.is_file():
-                        continue
-                    dest_name = (f"{k}-{payload.name[2:]}"
-                                 if payload.name.startswith("0-") else payload.name)
-                    payload.rename(event_dir / dest_name)
-            print(f"Staged {zip_path.name} -> {event_dir}")
-
-        (chunk_dir / "event_map.txt").write_text(
-            "# k\trun\tsubrun\tevent\tzip\n" + "\n".join(map_lines) + "\n")
-
-    return chunk_dirs
+    zips = _sorted_zips_in(bee_dir)[:n_files]
+    n_groups = -(-len(zips) // chunk_size)
+    for group_idx in range(n_groups):
+        out_dir = staging_root / f"chunk{group_idx:02d}"
+        staged_dirs.append(out_dir)
+        _stage_nuecc_group(zips[group_idx * chunk_size:(group_idx + 1) * chunk_size],
+                           out_dir, staging_root)
+    return staged_dirs
 
 
 def read_img_global_from_json(json_file):
@@ -482,6 +511,12 @@ def flatten_mc_tree(mc_tree):
     Non-root nodes always use _MC_TEXT_RE ("<particle> <energy> MeV"); that format
     hasn't changed between file versions.
 
+    is_interaction_vertex is True only for a TOP-LEVEL node whose text actually
+    parsed as an interaction (one of the two patterns above). The nuecc mc.json
+    carries a second top-level subtree headed "reco nu <E> MeV numu <s> nue <s>"
+    -- the reconstruction's neutrino candidate and its PID scores, not a true
+    interaction -- which matches neither pattern and is therefore NOT a vertex.
+
     Note: mc.json only lists a curated subset of trackIDs (primaries and notable
     daughters) -- most low-energy secondaries present in sed-sce_drift_smear_readout
     have no corresponding record here. All trackIDs in this tree fall in the
@@ -525,6 +560,16 @@ def flatten_mc_tree(mc_tree):
             else:
                 particle, energy_MeV = text, None
 
+        # A top-level node counts as a real interaction vertex only if its text
+        # PARSED as one -- either the "<idx> <flavor> ... Etot ... Edep ..." root
+        # form or the older "<flavor> Edep <e> MeV". The nuecc mc.json adds a
+        # second top-level subtree headed "reco nu  <E> MeV  numu <s>  nue <s>"
+        # (the reconstruction's neutrino candidate and PID scores, not a true
+        # interaction); it matches neither pattern, so without this guard
+        # build_neutrino_vertex_records would fabricate one phantom NC interaction
+        # per event from it.
+        is_interaction_vertex = is_root and (root_match is not None or match is not None)
+
         # start_xyz/end_xyz come from the node's 'data' block (cm, SAME coordinate
         # frame as sed-sce_drift_smear_readout's points -- verified by measuring
         # in-volume interaction vertices against their own cluster's deposits:
@@ -549,7 +594,7 @@ def flatten_mc_tree(mc_tree):
             'interaction_mode': interaction_mode,
             'interaction_current': interaction_current,
             'interaction_time_us': interaction_time_us,
-            'is_interaction_vertex': is_root,
+            'is_interaction_vertex': is_interaction_vertex,
             'parent_trackid': parent_trackid,
             'root_trackid': root_trackid,
             'start_xyz': tuple(start_xyz) if start_xyz else None,
